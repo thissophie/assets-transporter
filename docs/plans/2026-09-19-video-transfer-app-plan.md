@@ -411,7 +411,7 @@ struct SigV4Tests {
     @Test func authorizationHeaderFormat() {
         // sign a fixed request with fixed credentials + date, assert the header matches
         // "AWS4-HMAC-SHA256 Credential=AKID/20260919/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=<64 hex>"
-        // (regex-match the shape; the exact signature is covered by integration tests against MinIO)
+        // (regex-match the shape; the exact signature is covered by integration tests against ministack)
     }
 }
 ```
@@ -609,11 +609,11 @@ List of jobs with progress, error messages, retry / remove; "stale uploads clean
 
 ## Phase 6 — Integration verification
 
-### Task 6.1: MinIO integration test (optional but recommended)
-If `minio` / Docker is available locally: start MinIO, create bucket `it-video`, run an `@Test(.enabled(if: ...))` suite in `MyAppTests` gated on `MINIO_ENDPOINT` env var: real `S3Client` round-trip (put/list/get/delete + a real 3-part multipart with resume-after-abort). This is where SigV4 correctness is truly proven. Commit.
+### Task 6.1: ministack integration test (optional but recommended)
+Use **ministack** (per user direction — NOT MinIO) as the local S3-compatible endpoint: start it, create bucket `it-video`, run an `@Test(.enabled(if: ...))` suite in `MyAppTests` gated on an `S3_IT_ENDPOINT` env var: real `S3Client` round-trip (put/list/get/delete + a real 3-part multipart with resume-after-abort). This is where SigV4 correctness is truly proven. Commit.
 
 ### Task 6.2: End-to-end manual pass
-`RunProject` on macOS: configure credentials → create client + project → drag in two videos → watch multipart progress → verify keys/JSON in the bucket (Test-connection listing or MinIO console) → download the project to a folder → check `001_..., 002_...` naming → delete a clip. Repeat intake+upload on the iOS simulator (Photos picker). Fix anything found; final commit.
+`RunProject` on macOS: configure credentials → create client + project → drag in two videos → watch multipart progress → verify keys/JSON in the bucket (Test-connection listing or ministack's inspection tooling) → download the project to a folder → check `001_..., 002_...` naming → delete a clip. Repeat intake+upload on the iOS simulator (Photos picker). Fix anything found; final commit.
 
 ---
 

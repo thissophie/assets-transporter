@@ -133,7 +133,15 @@ nonisolated struct S3Client: Sendable {
                                     query: [URLQueryItem(name: "uploadId", value: uploadId)],
                                     headers: ["Content-Type": "application/xml"])
         request.httpBody = Data(xml.utf8)
-        try await execute(request)
+        let (data, response) = try await execute(request)
+
+        // S3 can return HTTP 200 with an <Error> body for this operation;
+        // only a CompleteMultipartUploadResult document counts as success.
+        guard let collector = XMLCollector.parse(data, groupedBy: nil),
+              collector.rootElement == "CompleteMultipartUploadResult" else {
+            throw S3Error.http(status: response.statusCode,
+                               body: String(decoding: data, as: UTF8.self))
+        }
     }
 
     func abortMultipartUpload(key: String, uploadId: String) async throws {
@@ -171,20 +179,40 @@ nonisolated struct S3Client: Sendable {
         return parts
     }
 
-    /// GET `?uploads&prefix=...`; returns in-progress multipart uploads.
+    /// GET `?uploads&prefix=...`; returns in-progress multipart uploads,
+    /// following key-marker/upload-id-marker pagination.
     func listMultipartUploads(prefix: String) async throws -> [(key: String, uploadId: String)] {
-        let request = signedRequest(method: "GET", key: "", query: [
-            URLQueryItem(name: "uploads", value: nil),
-            URLQueryItem(name: "prefix", value: prefix),
-        ])
-        let (data, _) = try await execute(request)
-        guard let collector = XMLCollector.parse(data, groupedBy: "Upload") else {
-            throw S3Error.badResponse
-        }
-        return collector.groups.compactMap { group in
-            guard let key = group["Key"], let uploadId = group["UploadId"] else { return nil }
-            return (key: key, uploadId: uploadId)
-        }
+        var uploads: [(key: String, uploadId: String)] = []
+        var markers: (key: String, uploadId: String)?
+
+        repeat {
+            var query: [URLQueryItem] = [
+                URLQueryItem(name: "uploads", value: nil),
+                URLQueryItem(name: "prefix", value: prefix),
+            ]
+            if let markers {
+                query.append(URLQueryItem(name: "key-marker", value: markers.key))
+                query.append(URLQueryItem(name: "upload-id-marker", value: markers.uploadId))
+            }
+            let request = signedRequest(method: "GET", key: "", query: query)
+            let (data, _) = try await execute(request)
+            guard let collector = XMLCollector.parse(data, groupedBy: "Upload") else {
+                throw S3Error.badResponse
+            }
+            uploads.append(contentsOf: collector.groups.compactMap { group in
+                guard let key = group["Key"], let uploadId = group["UploadId"] else { return nil }
+                return (key: key, uploadId: uploadId)
+            })
+            if collector.topLevel["IsTruncated"] == "true",
+               let nextKey = collector.topLevel["NextKeyMarker"],
+               let nextUploadId = collector.topLevel["NextUploadIdMarker"] {
+                markers = (key: nextKey, uploadId: nextUploadId)
+            } else {
+                markers = nil
+            }
+        } while markers != nil
+
+        return uploads
     }
 
     // MARK: - Internals
@@ -226,6 +254,7 @@ nonisolated struct S3Client: Sendable {
 /// All values are whitespace-trimmed.
 private nonisolated final class XMLCollector: NSObject, XMLParserDelegate {
     private let groupElement: String?
+    private(set) var rootElement: String?
     private(set) var groups: [[String: String]] = []
     private(set) var topLevel: [String: String] = [:]
     private var current: [String: String]?
@@ -247,6 +276,7 @@ private nonisolated final class XMLCollector: NSObject, XMLParserDelegate {
                 namespaceURI: String?, qualifiedName qName: String?,
                 attributes attributeDict: [String: String] = [:]) {
         text = ""
+        if rootElement == nil { rootElement = elementName }
         if elementName == groupElement { current = [:] }
     }
 

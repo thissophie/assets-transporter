@@ -113,12 +113,12 @@ nonisolated enum SigV4 {
     // MARK: - Internals
 
     /// UTC formatter producing SigV4 timestamps of the form `yyyyMMdd'T'HHmmss'Z'`.
-    private static let amzDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+    /// ISO8601DateFormatter is thread-safe (unlike DateFormatter); omitting the
+    /// separator options yields the basic format SigV4 requires.
+    private static let amzDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime, .withTimeZone]
         formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.calendar = Calendar(identifier: .gregorian)
         return formatter
     }()
 

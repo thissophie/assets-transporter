@@ -176,9 +176,17 @@ struct S3ClientTests {
         expectAllSigned(transport)
     }
 
+    private static let completeSuccessXML = """
+    <CompleteMultipartUploadResult>
+      <Location>https://minio.example.com:9000/video/a.mov</Location>
+      <Key>a.mov</Key>
+      <ETag>"final-etag"</ETag>
+    </CompleteMultipartUploadResult>
+    """
+
     // 7. completeMultipartUpload sorts parts and quotes ETags
     @Test func completeMultipartUploadSortsPartsInBody() async throws {
-        let transport = RecordingTransport()
+        let transport = RecordingTransport(data: Data(Self.completeSuccessXML.utf8))
         let client = makeClient(transport: transport)
 
         try await client.completeMultipartUpload(key: "a.mov", uploadId: "abc", parts: [
@@ -196,6 +204,33 @@ struct S3ClientTests {
             + "<Part><PartNumber>2</PartNumber><ETag>\"e2\"</ETag></Part>"
             + "<Part><PartNumber>3</PartNumber><ETag>\"e3\"</ETag></Part>"
         #expect(body.contains(expectedOrder))
+        expectAllSigned(transport)
+    }
+
+    // 7b. completeMultipartUpload rejects HTTP 200 responses carrying an <Error> body
+    @Test func completeMultipartUploadThrowsOnErrorBodyDespite200() async throws {
+        let errorXML = """
+        <Error>
+          <Code>InternalError</Code>
+          <Message>We encountered an internal error. Please try again.</Message>
+        </Error>
+        """
+        let transport = RecordingTransport(data: Data(errorXML.utf8))
+        let client = makeClient(transport: transport)
+
+        await #expect(throws: S3Error.http(status: 200, body: errorXML)) {
+            try await client.completeMultipartUpload(key: "a.mov", uploadId: "abc",
+                                                     parts: [(partNumber: 1, etag: "e1")])
+        }
+    }
+
+    // 7c. completeMultipartUpload succeeds on a valid CompleteMultipartUploadResult body
+    @Test func completeMultipartUploadSucceedsOnResultBody() async throws {
+        let transport = RecordingTransport(data: Data(Self.completeSuccessXML.utf8))
+        let client = makeClient(transport: transport)
+
+        try await client.completeMultipartUpload(key: "a.mov", uploadId: "abc",
+                                                 parts: [(partNumber: 1, etag: "e1")])
         expectAllSigned(transport)
     }
 
@@ -252,6 +287,41 @@ struct S3ClientTests {
         let url = transport.requests[0].request.url?.absoluteString ?? ""
         #expect(url.contains("uploads"))
         #expect(url.contains("prefix=a"))
+        expectAllSigned(transport)
+    }
+
+    // 9b. listMultipartUploads follows key-marker/upload-id-marker pagination
+    @Test func listMultipartUploadsFollowsMarkers() async throws {
+        let page1 = """
+        <ListMultipartUploadsResult>
+          <IsTruncated>true</IsTruncated>
+          <NextKeyMarker>b.mov</NextKeyMarker>
+          <NextUploadIdMarker>u2</NextUploadIdMarker>
+          <Upload><Key>a.mov</Key><UploadId>u1</UploadId></Upload>
+          <Upload><Key>b.mov</Key><UploadId>u2</UploadId></Upload>
+        </ListMultipartUploadsResult>
+        """
+        let page2 = """
+        <ListMultipartUploadsResult>
+          <IsTruncated>false</IsTruncated>
+          <Upload><Key>c.mov</Key><UploadId>u3</UploadId></Upload>
+        </ListMultipartUploadsResult>
+        """
+        let transport = RecordingTransport(responses: [
+            (data: Data(page1.utf8), status: 200, headers: [:]),
+            (data: Data(page2.utf8), status: 200, headers: [:]),
+        ])
+        let client = makeClient(transport: transport)
+
+        let uploads = try await client.listMultipartUploads(prefix: "")
+
+        #expect(uploads.count == 3)
+        #expect(uploads[2] == (key: "c.mov", uploadId: "u3"))
+        let requests = transport.requests
+        #expect(requests.count == 2)
+        let secondURL = requests[1].request.url?.absoluteString ?? ""
+        #expect(secondURL.contains("key-marker=b.mov"))
+        #expect(secondURL.contains("upload-id-marker=u2"))
         expectAllSigned(transport)
     }
 

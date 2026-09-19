@@ -15,6 +15,7 @@ nonisolated struct StoredS3Settings: Codable, Equatable, Sendable {
 nonisolated struct CredentialStore {
     enum StoreError: Error {
         case encodingFailed
+        case unexpectedData
         case keychain(OSStatus)
     }
 
@@ -31,27 +32,38 @@ nonisolated struct CredentialStore {
 
         var attributes = baseQuery()
         attributes[kSecValueData as String] = data
+        // Readable during background transfers once the device has been unlocked,
+        // and never migrated to another device.
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(attributes as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw StoreError.keychain(status)
         }
     }
 
-    /// Returns the stored settings, or nil if absent or undecodable.
-    func load() -> StoredS3Settings? {
+    /// Returns the stored settings, or nil when no item exists.
+    /// Throws for any other Keychain failure or if the blob fails to decode.
+    func load() throws -> StoredS3Settings? {
         var query = baseQuery()
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(StoredS3Settings.self, from: data)
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data else { throw StoreError.unexpectedData }
+            return try JSONDecoder().decode(StoredS3Settings.self, from: data)
+        case errSecItemNotFound:
+            return nil
+        default:
+            throw StoreError.keychain(status)
+        }
     }
 
     /// Loads stored settings and bridges them to an S3Config; nil if nothing is stored.
-    func makeS3Config() -> S3Config? {
-        load()?.makeS3Config()
+    func makeS3Config() throws -> S3Config? {
+        try load()?.makeS3Config()
     }
 
     /// Removes the stored settings; missing items are not an error.
@@ -64,6 +76,7 @@ nonisolated struct CredentialStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: Self.account,
+            kSecUseDataProtectionKeychain as String: true,
         ]
     }
 }

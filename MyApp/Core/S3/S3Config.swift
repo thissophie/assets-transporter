@@ -20,13 +20,14 @@ nonisolated struct S3Config: Equatable, Sendable {
         components.port = endpoint.port
 
         let encodedKey = Self.encodeKey(key)
-        switch style {
-        case .path:
-            components.host = endpoint.host
-            components.percentEncodedPath = "/\(bucket)/\(encodedKey)"
-        case .virtualHost:
+        // Virtual-host style only works when the bucket is a valid hostname label;
+        // otherwise (or for path style) fall back to a percent-encoded path segment.
+        if style == .virtualHost, Self.isValidHostBucket(bucket) {
             components.host = "\(bucket).\(endpoint.host ?? "")"
             components.percentEncodedPath = "/\(encodedKey)"
+        } else {
+            components.host = endpoint.host
+            components.percentEncodedPath = "/\(Self.encodeKey(bucket))/\(encodedKey)"
         }
 
         if let query, !query.isEmpty {
@@ -57,6 +58,20 @@ nonisolated struct S3Config: Equatable, Sendable {
 
     private static func encodeKey(_ key: String) -> String {
         key.addingPercentEncoding(withAllowedCharacters: keyAllowed) ?? key
+    }
+
+    /// Characters allowed in DNS hostname labels used for virtual-host addressing:
+    /// lowercase alphanumerics and hyphens, with dots separating labels.
+    private static let hostBucketAllowed = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-.")
+
+    /// True when `bucket` can be safely prepended to the endpoint host.
+    private static func isValidHostBucket(_ bucket: String) -> Bool {
+        !bucket.isEmpty
+            && bucket.unicodeScalars.allSatisfy { hostBucketAllowed.contains($0) }
+            && !bucket.hasPrefix("-") && !bucket.hasSuffix("-")
+            && !bucket.hasPrefix(".") && !bucket.hasSuffix(".")
+            && !bucket.contains("..")
     }
 
     private static func encodeQueryComponent(_ component: String) -> String {

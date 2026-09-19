@@ -129,5 +129,5 @@ safety net if desired.
 
 Swift Testing unit tests: SigV4 signing against AWS published test vectors,
 slug/key generation, ordering logic (timestamp + override), manifest
-encode/decode. Integration target runs the full client against a local MinIO
-when available.
+encode/decode. Integration target runs the full client against a local
+ministack when available.
