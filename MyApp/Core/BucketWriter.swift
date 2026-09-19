@@ -1,5 +1,11 @@
 import Foundation
 
+/// What deleting a prefix would remove: how many objects, totalling how many bytes.
+nonisolated struct DeletionPreview: Equatable, Sendable {
+    var objectCount: Int
+    var totalBytes: Int64
+}
+
 /// Mutations for the self-describing bucket layout: creating and renaming
 /// clients/projects (manifest writes), reordering projects, and sidecar updates.
 nonisolated struct BucketWriter: Sendable {
@@ -49,6 +55,35 @@ nonisolated struct BucketWriter: Sendable {
     /// Puts the encoded sidecar at `<clipKey>.json`.
     func updateClipSidecar(clipKey: String, sidecar: ClipSidecar) async throws {
         try await putManifest(sidecar, key: BucketKeys.sidecarKey(forClipKey: clipKey))
+    }
+
+    // MARK: - Deletion
+
+    /// What a `deletePrefix` would remove: object count and total byte size.
+    func deletionPreview(prefix: String) async throws -> DeletionPreview {
+        let listing = try await client.listObjects(prefix: prefix, delimiter: nil)
+        return DeletionPreview(objectCount: listing.objects.count,
+                               totalBytes: listing.objects.reduce(0) { $0 + $1.size })
+    }
+
+    /// Deletes the clip file, then its sidecar. A 404 on the sidecar delete is
+    /// tolerated (the sidecar may not exist); any other error propagates.
+    func deleteClip(_ clip: Clip) async throws {
+        try await client.deleteObject(key: clip.key)
+        do {
+            try await client.deleteObject(key: BucketKeys.sidecarKey(forClipKey: clip.key))
+        } catch S3Error.http(status: 404, body: _) {
+            // Sidecar was already absent — nothing to clean up.
+        }
+    }
+
+    /// Deletes every object under `prefix`, sequentially. Used for both
+    /// projects and clients.
+    func deletePrefix(_ prefix: String) async throws {
+        let listing = try await client.listObjects(prefix: prefix, delimiter: nil)
+        for object in listing.objects {
+            try await client.deleteObject(key: object.key)
+        }
     }
 
     // MARK: - Internals

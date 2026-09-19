@@ -179,4 +179,106 @@ struct BucketWriterTests {
         let decoded = try decodeBody(ClipSidecar.self, from: requests[0])
         #expect(decoded == sidecar)
     }
+
+    // MARK: - Deletion
+
+    private static let projectPrefix = "acme-corp-x7f2/spring-gala-k9q1/"
+
+    private static let deletionListXML = """
+    <ListBucketResult>
+      <IsTruncated>false</IsTruncated>
+      <Contents><Key>\(projectPrefix)project.json</Key><Size>100</Size></Contents>
+      <Contents><Key>\(projectPrefix)clips/2026-03-01_120000_cama_abc1.mov</Key><Size>200</Size></Contents>
+      <Contents><Key>\(projectPrefix)clips/2026-03-01_120000_cama_abc1.mov.json</Key><Size>300</Size></Contents>
+    </ListBucketResult>
+    """
+
+    private func makeClip(key: String) -> Clip {
+        Clip(key: key,
+             sidecar: ClipSidecar(displayName: "Clip",
+                                  cameraLabel: nil, notes: nil, capturedAt: nil,
+                                  orderOverride: nil, duration: nil,
+                                  width: nil, height: nil, codec: nil,
+                                  fileSize: 200,
+                                  originalFilename: "clip.mov",
+                                  sourceDevice: "iPhone 17"))
+    }
+
+    // 7. deletionPreview counts objects and sums bytes from the listing.
+    @Test func deletionPreviewCountsObjectsAndSumsBytes() async throws {
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "list-type=2", with: (Data(Self.deletionListXML.utf8), 200))
+        let writer = makeWriter(transport: transport)
+
+        let preview = try await writer.deletionPreview(prefix: Self.projectPrefix)
+
+        #expect(preview == DeletionPreview(objectCount: 3, totalBytes: 600))
+        let listURL = transport.requests[0].request.url?.absoluteString.removingPercentEncoding ?? ""
+        #expect(listURL.contains("prefix=\(Self.projectPrefix)"))
+        #expect(!listURL.contains("delimiter"))
+    }
+
+    // 8. deletePrefix lists everything under the prefix and issues one DELETE
+    //    per listed object, with exact keys.
+    @Test func deletePrefixDeletesEveryListedObject() async throws {
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "list-type=2", with: (Data(Self.deletionListXML.utf8), 200))
+        let writer = makeWriter(transport: transport)
+
+        try await writer.deletePrefix(Self.projectPrefix)
+
+        let requests = transport.requests
+        #expect(requests.count == 4)   // 1 list + 3 deletes
+        #expect(requests[0].request.httpMethod == "GET")
+        let deletes = requests.dropFirst()
+        #expect(deletes.allSatisfy { $0.request.httpMethod == "DELETE" })
+        #expect(deletes.map(\.request.url?.path) == [
+            "/video/\(Self.projectPrefix)project.json",
+            "/video/\(Self.projectPrefix)clips/2026-03-01_120000_cama_abc1.mov",
+            "/video/\(Self.projectPrefix)clips/2026-03-01_120000_cama_abc1.mov.json",
+        ])
+    }
+
+    // 9. deleteClip deletes the file then its sidecar; a 404 on the sidecar
+    //    delete is tolerated (the sidecar may not exist).
+    @Test func deleteClipDeletesFileAndSidecarToleratingMissingSidecar() async throws {
+        let clipKey = Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov"
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: ".mov.json", with: (Data("no such key".utf8), 404))
+        let writer = makeWriter(transport: transport)
+
+        try await writer.deleteClip(makeClip(key: clipKey))
+
+        let requests = transport.requests
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { $0.request.httpMethod == "DELETE" })
+        #expect(requests[0].request.url?.path == "/video/\(clipKey)")
+        #expect(requests[1].request.url?.path == "/video/\(clipKey).json")
+    }
+
+    // 10. A 404 on the FILE delete propagates (and the sidecar delete never runs).
+    @Test func deleteClipPropagates404OnFileDelete() async throws {
+        let clipKey = Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov"
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "abc1.mov", with: (Data("gone".utf8), 404))
+        let writer = makeWriter(transport: transport)
+
+        await #expect(throws: S3Error.http(status: 404, body: "gone")) {
+            try await writer.deleteClip(makeClip(key: clipKey))
+        }
+        #expect(transport.requests.count == 1)
+    }
+
+    // 11. Non-404 errors on the sidecar delete propagate.
+    @Test func deleteClipPropagatesNon404SidecarError() async throws {
+        let clipKey = Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov"
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: ".mov.json", with: (Data("boom".utf8), 500))
+        let writer = makeWriter(transport: transport)
+
+        await #expect(throws: S3Error.http(status: 500, body: "boom")) {
+            try await writer.deleteClip(makeClip(key: clipKey))
+        }
+        #expect(transport.requests.count == 2)
+    }
 }
