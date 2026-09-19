@@ -7,6 +7,7 @@ nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [(request: URLRequest, uploadFile: URL?)] = []
     private var responses: [(data: Data, status: Int, headers: [String: String])]
+    private var keyedResponses: [(substring: String, data: Data, status: Int)] = []
 
     init(responses: [(data: Data, status: Int, headers: [String: String])]) {
         self.responses = responses
@@ -21,12 +22,27 @@ nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
         return recorded
     }
 
+    /// Keyed responder mode: any request whose (percent-decoded) URL contains
+    /// `keySubstring` gets this response. Keyed responses take priority over the
+    /// FIFO queue and are not consumed, so concurrent fetch order doesn't matter.
+    func respond(to keySubstring: String, with response: (Data, Int)) {
+        lock.lock(); defer { lock.unlock() }
+        keyedResponses.append((substring: keySubstring, data: response.0, status: response.1))
+    }
+
     func perform(_ request: URLRequest, uploadFile: URL?) async throws -> (Data, HTTPURLResponse) {
         lock.lock()
         recorded.append((request: request, uploadFile: uploadFile))
-        let canned = responses.isEmpty
-            ? (data: Data(), status: 200, headers: [String: String]())
-            : responses.removeFirst()
+        let urlString = request.url?.absoluteString ?? ""
+        let decodedURL = urlString.removingPercentEncoding ?? urlString
+        let canned: (data: Data, status: Int, headers: [String: String])
+        if let keyed = keyedResponses.first(where: { decodedURL.contains($0.substring) }) {
+            canned = (data: keyed.data, status: keyed.status, headers: [:])
+        } else if responses.isEmpty {
+            canned = (data: Data(), status: 200, headers: [String: String]())
+        } else {
+            canned = responses.removeFirst()
+        }
         lock.unlock()
         let response = HTTPURLResponse(url: request.url!, statusCode: canned.status,
                                        httpVersion: "HTTP/1.1", headerFields: canned.headers)!
