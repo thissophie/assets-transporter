@@ -10,6 +10,9 @@ nonisolated struct DeletionPreview: Equatable, Sendable {
 /// clients/projects (manifest writes), reordering projects, and sidecar updates.
 nonisolated struct BucketWriter: Sendable {
     var client: S3Client
+    /// Injectable clock (tests). `createProject` truncates it to whole seconds
+    /// so a written createdAt round-trips exactly through ISO8601.
+    var now: @Sendable () -> Date = Date.init
 
     /// Creates `<name-slug>-<shortID>/client.json` and returns a ref to it.
     func createClient(name: String) async throws -> ClientRef {
@@ -21,9 +24,9 @@ nonisolated struct BucketWriter: Sendable {
 
     /// Creates `<clientPrefix><name-slug>-<shortID>/project.json` and returns a ref to it.
     func createProject(name: String, in clientPrefix: String) async throws -> ProjectRef {
-        let clientPrefix = clientPrefix.hasSuffix("/") ? clientPrefix : clientPrefix + "/"
-        let prefix = clientPrefix + Self.newSlug(for: name) + "/"
-        let manifest = ProjectManifest(displayName: name, sortIndex: nil, createdAt: Date())
+        let prefix = BucketKeys.ensuringTrailingSlash(clientPrefix) + Self.newSlug(for: name) + "/"
+        let createdAt = Date(timeIntervalSince1970: now().timeIntervalSince1970.rounded(.down))
+        let manifest = ProjectManifest(displayName: name, sortIndex: nil, createdAt: createdAt)
         try await putManifest(manifest, key: prefix + "project.json")
         return ProjectRef(prefix: prefix, manifest: manifest)
     }
@@ -61,7 +64,8 @@ nonisolated struct BucketWriter: Sendable {
 
     /// What a `deletePrefix` would remove: object count and total byte size.
     func deletionPreview(prefix: String) async throws -> DeletionPreview {
-        let listing = try await client.listObjects(prefix: prefix, delimiter: nil)
+        let listing = try await client.listObjects(prefix: BucketKeys.ensuringTrailingSlash(prefix),
+                                                   delimiter: nil)
         return DeletionPreview(objectCount: listing.objects.count,
                                totalBytes: listing.objects.reduce(0) { $0 + $1.size })
     }
@@ -77,10 +81,12 @@ nonisolated struct BucketWriter: Sendable {
         }
     }
 
-    /// Deletes every object under `prefix`, sequentially. Used for both
-    /// projects and clients.
+    /// Deletes every object under `prefix`, sequentially, halting on the first
+    /// failure. Used for both projects and clients. The prefix is normalized to
+    /// end in "/" so it can never match a sibling folder's keys.
     func deletePrefix(_ prefix: String) async throws {
-        let listing = try await client.listObjects(prefix: prefix, delimiter: nil)
+        let listing = try await client.listObjects(prefix: BucketKeys.ensuringTrailingSlash(prefix),
+                                                   delimiter: nil)
         for object in listing.objects {
             try await client.deleteObject(key: object.key)
         }

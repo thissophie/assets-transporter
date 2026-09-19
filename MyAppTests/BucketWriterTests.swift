@@ -180,6 +180,21 @@ struct BucketWriterTests {
         #expect(decoded == sidecar)
     }
 
+    // createProject stamps createdAt from the injected clock, truncated to whole
+    // seconds so a write-then-read round-trips exactly through ISO8601.
+    @Test func createProjectStampsTruncatedInjectedClock() async throws {
+        let transport = RecordingTransport(responses: [])
+        var writer = makeWriter(transport: transport)
+        writer.now = { Date(timeIntervalSince1970: 1_700_000_000.75) }
+
+        let ref = try await writer.createProject(name: "Spring Gala", in: "acme-corp-x7f2/")
+
+        let expected = Date(timeIntervalSince1970: 1_700_000_000)
+        #expect(ref.manifest.createdAt == expected)
+        let manifest = try decodeBody(ProjectManifest.self, from: transport.requests[0])
+        #expect(manifest.createdAt == expected)
+    }
+
     // MARK: - Deletion
 
     private static let projectPrefix = "acme-corp-x7f2/spring-gala-k9q1/"
@@ -237,6 +252,47 @@ struct BucketWriterTests {
             "/video/\(Self.projectPrefix)clips/2026-03-01_120000_cama_abc1.mov",
             "/video/\(Self.projectPrefix)clips/2026-03-01_120000_cama_abc1.mov.json",
         ])
+    }
+
+    // 8b. Slash-less prefixes are normalized before listing so
+    //     deletePrefix("acme-corp-x7f2") can never match a sibling like
+    //     "acme-corp-x7f2b-.../" keys. Same guard for deletionPreview.
+    @Test func deletionNormalizesPrefixWithTrailingSlash() async throws {
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "list-type=2", with: (Data(Self.deletionListXML.utf8), 200))
+        let writer = makeWriter(transport: transport)
+
+        _ = try await writer.deletionPreview(prefix: "acme-corp-x7f2")
+        try await writer.deletePrefix("acme-corp-x7f2")
+
+        let listURLs = transport.requests
+            .filter { $0.request.httpMethod == "GET" }
+            .map { $0.request.url?.absoluteString.removingPercentEncoding ?? "" }
+        #expect(listURLs.count == 2)
+        #expect(listURLs.allSatisfy { $0.contains("prefix=acme-corp-x7f2/") })
+    }
+
+    // 8c. deletePrefix halts on the first delete error: the failing key's error
+    //     propagates and later keys are never attempted.
+    @Test func deletePrefixHaltsOnFirstDeleteError() async throws {
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "list-type=2", with: (Data(Self.deletionListXML.utf8), 200))
+        transport.respond(to: "abc1.mov", with: (Data("boom".utf8), 500))   // second of three keys
+        let writer = makeWriter(transport: transport)
+
+        await #expect(throws: S3Error.http(status: 500, body: "boom")) {
+            try await writer.deletePrefix(Self.projectPrefix)
+        }
+
+        let requests = transport.requests
+        #expect(requests.count == 3)   // list + first two deletes only
+        let deletePaths = requests.filter { $0.request.httpMethod == "DELETE" }
+            .map { $0.request.url?.path ?? "" }
+        #expect(deletePaths == [
+            "/video/\(Self.projectPrefix)project.json",
+            "/video/\(Self.projectPrefix)clips/2026-03-01_120000_cama_abc1.mov",
+        ])
+        #expect(!deletePaths.contains { $0.hasSuffix(".mov.json") })
     }
 
     // 9. deleteClip deletes the file then its sidecar; a 404 on the sidecar

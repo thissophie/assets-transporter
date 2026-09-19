@@ -80,6 +80,43 @@ struct BucketReaderTests {
         #expect(projects[2].manifest.displayName == "Autumn Fest")
     }
 
+    // 2b. displayName ties break case-insensitively (like listClients), and a
+    //     case-insensitively equal name falls through to the prefix tiebreak.
+    @Test func listProjectsSortsNamesCaseInsensitivelyWithPrefixTiebreak() async throws {
+        let listXML = """
+        <ListBucketResult>
+          <IsTruncated>false</IsTruncated>
+          <CommonPrefixes><Prefix>acme-corp-x7f2/z-proj/</Prefix></CommonPrefixes>
+          <CommonPrefixes><Prefix>acme-corp-x7f2/a-proj/</Prefix></CommonPrefixes>
+          <CommonPrefixes><Prefix>acme-corp-x7f2/m-proj/</Prefix></CommonPrefixes>
+        </ListBucketResult>
+        """
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "list-type=2", with: (Data(listXML.utf8), 200))
+        // Same (nil) sortIndex and identical createdAt everywhere: only the
+        // displayName (then prefix) tiebreaks apply.
+        transport.respond(to: "z-proj/project.json", with: (Data("""
+            {"displayName":"alpha","createdAt":"2026-01-01T00:00:00Z"}
+            """.utf8), 200))
+        transport.respond(to: "a-proj/project.json", with: (Data("""
+            {"displayName":"ALPHA","createdAt":"2026-01-01T00:00:00Z"}
+            """.utf8), 200))
+        transport.respond(to: "m-proj/project.json", with: (Data("""
+            {"displayName":"Beta","createdAt":"2026-01-01T00:00:00Z"}
+            """.utf8), 200))
+        let reader = makeReader(transport: transport)
+
+        let projects = try await reader.listProjects(clientPrefix: "acme-corp-x7f2/")
+
+        // Case-insensitive: both alphas before Beta (case-sensitive ASCII would
+        // put "Beta" before "alpha"); "ALPHA"/"alpha" tie -> prefix ascending.
+        #expect(projects.map(\.prefix) == [
+            "acme-corp-x7f2/a-proj/",
+            "acme-corp-x7f2/z-proj/",
+            "acme-corp-x7f2/m-proj/",
+        ])
+    }
+
     // MARK: - listClips
 
     // 3. Sidecars merge onto clips; missing sidecar -> fallback; sidecar objects
@@ -130,6 +167,10 @@ struct BucketReaderTests {
         #expect(clips[1].sidecar.displayName == "Ceremony")
         #expect(clips[1].sidecar.fileSize == 1000)
         #expect(clips[1].sidecar.sourceDevice == "iPhone 17")
+
+        // Exactly one list + one sidecar GET: the clip without a sidecar in the
+        // listing must not trigger a speculative sidecar fetch.
+        #expect(transport.requests.count == 2)
 
         // The listing request targeted <project>/clips/ with no delimiter.
         let listRequest = transport.requests[0].request

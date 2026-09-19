@@ -36,6 +36,13 @@ nonisolated enum BucketKeys {
         clipKey + ".json"
     }
 
+    /// "acme-corp-x7f2" -> "acme-corp-x7f2/" (unchanged if already slash-terminated).
+    /// Folder prefixes must be slash-terminated before listing/deleting so a
+    /// prefix can never match a sibling folder that merely shares its spelling.
+    static func ensuringTrailingSlash(_ prefix: String) -> String {
+        prefix.hasSuffix("/") ? prefix : prefix + "/"
+    }
+
     static func isClipFile(_ key: String) -> Bool {
         key.contains("/clips/") && !key.hasSuffix(".json")
     }

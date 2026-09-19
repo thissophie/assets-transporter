@@ -38,9 +38,10 @@ nonisolated struct BucketReader: Sendable {
         }
     }
 
-    /// Projects under a client, sorted by (sortIndex ?? Int.max), createdAt, displayName.
+    /// Projects under a client, sorted by (sortIndex ?? Int.max), createdAt,
+    /// displayName (case-insensitive), then prefix.
     func listProjects(clientPrefix: String) async throws -> [ProjectRef] {
-        let clientPrefix = Self.ensuringTrailingSlash(clientPrefix)
+        let clientPrefix = BucketKeys.ensuringTrailingSlash(clientPrefix)
         let listing = try await client.listObjects(prefix: clientPrefix, delimiter: "/")
         let refs = await mapConcurrently(listing.commonPrefixes) { prefix in
             let manifest = await fetchManifest(ProjectManifest.self, key: prefix + "project.json")
@@ -49,8 +50,16 @@ nonisolated struct BucketReader: Sendable {
             return ProjectRef(prefix: prefix, manifest: manifest)
         }
         return refs.sorted { a, b in
-            (a.manifest.sortIndex ?? Int.max, a.manifest.createdAt, a.manifest.displayName)
-                < (b.manifest.sortIndex ?? Int.max, b.manifest.createdAt, b.manifest.displayName)
+            let (ai, bi) = (a.manifest.sortIndex ?? Int.max, b.manifest.sortIndex ?? Int.max)
+            if ai != bi { return ai < bi }
+            if a.manifest.createdAt != b.manifest.createdAt {
+                return a.manifest.createdAt < b.manifest.createdAt
+            }
+            switch a.manifest.displayName.caseInsensitiveCompare(b.manifest.displayName) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return a.prefix < b.prefix
+            }
         }
     }
 
@@ -58,7 +67,7 @@ nonisolated struct BucketReader: Sendable {
     /// one exists in the same listing; otherwise (or on decode failure) a fallback
     /// sidecar is synthesized. Ordered by effectiveTime.
     func listClips(projectPrefix: String) async throws -> [Clip] {
-        let projectPrefix = Self.ensuringTrailingSlash(projectPrefix)
+        let projectPrefix = BucketKeys.ensuringTrailingSlash(projectPrefix)
         let listing = try await client.listObjects(prefix: projectPrefix + "clips/", delimiter: nil)
         let allKeys = Set(listing.objects.map(\.key))
         let clipObjects = listing.objects.filter { BucketKeys.isClipFile($0.key) }
@@ -115,10 +124,6 @@ nonisolated struct BucketReader: Sendable {
 
     private static func strippingTrailingSlash(_ prefix: String) -> String {
         prefix.hasSuffix("/") ? String(prefix.dropLast()) : prefix
-    }
-
-    private static func ensuringTrailingSlash(_ prefix: String) -> String {
-        prefix.hasSuffix("/") ? prefix : prefix + "/"
     }
 
     private static func lastPathComponent(of prefix: String) -> String {
