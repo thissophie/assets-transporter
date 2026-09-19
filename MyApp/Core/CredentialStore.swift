@@ -81,7 +81,7 @@ nonisolated struct CredentialStore {
     }
 }
 
-extension StoredS3Settings {
+nonisolated extension StoredS3Settings {
     /// Bridges stored settings into a request-building S3Config.
     func makeS3Config() -> S3Config {
         S3Config(endpoint: endpoint, bucket: bucket,
