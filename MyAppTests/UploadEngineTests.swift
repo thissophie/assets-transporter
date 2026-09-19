@@ -10,6 +10,20 @@ private nonisolated final class ProgressBox: @unchecked Sendable {
     var all: [Double] { lock.lock(); defer { lock.unlock() }; return values }
 }
 
+/// In-memory `UploadJobStoring` that records a snapshot of every `update`,
+/// proving the engine persists after each state transition.
+private nonisolated final class SpyJobStore: UploadJobStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshots: [UploadJob] = []
+    func load() async -> [UploadJob] { [] }
+    func save(_ jobs: [UploadJob]) async throws {}
+    func update(_ job: UploadJob) async throws { record(job) }
+    private func record(_ job: UploadJob) {
+        lock.lock(); snapshots.append(job); lock.unlock()
+    }
+    var updates: [UploadJob] { lock.lock(); defer { lock.unlock() }; return snapshots }
+}
+
 struct UploadEngineTests {
 
     // MARK: - Fixtures
@@ -28,7 +42,7 @@ struct UploadEngineTests {
             .appending(path: "engine-tests-\(UUID().uuidString)"))
     }
 
-    private func makeEngine(transport: RecordingTransport, store: UploadQueueStore,
+    private func makeEngine(transport: RecordingTransport, store: any UploadJobStoring,
                             partSize: Int64 = 100) -> UploadEngine {
         UploadEngine(client: makeClient(transport: transport), store: store, partSize: partSize)
     }
@@ -116,7 +130,7 @@ struct UploadEngineTests {
         #expect(result.state == .done)
         #expect(result.uploadId == "fresh-1")
         #expect(result.completedParts == [1: "e1", 2: "e2", 3: "e3"])
-        #expect(store.load() == [result])
+        #expect(await store.load() == [result])
 
         // Request sequence: create, parts 1-3 ascending, complete, sidecar LAST.
         let requests = transport.requests
@@ -222,7 +236,7 @@ struct UploadEngineTests {
         }
         #expect(result.uploadId == "fresh-1")
         #expect(result.completedParts == [1: "e1"])
-        #expect(store.load() == [result])
+        #expect(await store.load() == [result])
 
         // No complete, no abort, no sidecar after the failure.
         let requests = transport.requests
@@ -261,7 +275,7 @@ struct UploadEngineTests {
         // Parts are kept for resume: uploadId and ETags survive the failure.
         #expect(result.uploadId == "fresh-1")
         #expect(result.completedParts.count == 3)
-        #expect(store.load() == [result])
+        #expect(await store.load() == [result])
     }
 
     // MARK: - 5. Stale uploadId (NoSuchUpload) restarts fresh
@@ -368,6 +382,212 @@ struct UploadEngineTests {
 
         #expect(result == job)
         #expect(transport.requests.isEmpty)
-        #expect(store.load().isEmpty)
+        #expect(await store.load().isEmpty)
+    }
+
+    // MARK: - C1. Completed multipart must never be re-done for a failed sidecar
+
+    @Test func sidecarFailureKeepsCompletionAndRetryOnlyPutsSidecar() async throws {
+        let (sourceURL, _) = try makeSource(bytes: 300)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let transport = RecordingTransport(responses: [
+            ok(createXML("fresh-1")),
+            etag("e1"), etag("e2"), etag("e3"),
+            ok(completeXML),
+            (data: Data("boom".utf8), status: 500, headers: [:]),   // sidecar PUT fails
+            // Retry falls through to the FIFO default (200) for the sidecar.
+        ])
+        let store = makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let engine = makeEngine(transport: transport, store: store)
+
+        let failed = await engine.run(job: makeJob(sourceURL: sourceURL))
+
+        guard case .failed = failed.state else {
+            Issue.record("expected .failed, got \(failed.state)")
+            return
+        }
+        #expect(failed.multipartCompleted == true)
+        #expect(await store.load() == [failed])
+
+        let done = await engine.run(job: failed)
+
+        #expect(done.state == .done)
+        let requests = transport.requests
+        // Exactly ONE extra request on retry: the sidecar PUT. No part
+        // uploads, no listParts, no second complete.
+        #expect(requests.count == 7)
+        #expect(requests[6].request.httpMethod == "PUT")
+        #expect(requests[6].request.url?.path == "/video/\(Self.clipKey).json")
+    }
+
+    @Test func complete404WithMatchingObjectSizeIsTreatedAsCompleted() async throws {
+        let (sourceURL, _) = try makeSource(bytes: 300)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let transport = RecordingTransport(responses: [
+            ok(createXML("fresh-1")),
+            etag("e1"), etag("e2"), etag("e3"),
+            (data: Data("<Error><Code>NoSuchUpload</Code></Error>".utf8), status: 404, headers: [:]),
+            (data: Data(), status: 200, headers: ["Content-Length": "300"]),    // HEAD
+            ok(""),                                                             // sidecar
+        ])
+        let store = makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let engine = makeEngine(transport: transport, store: store)
+
+        let result = await engine.run(job: makeJob(sourceURL: sourceURL))
+
+        #expect(result.state == .done)
+        #expect(result.multipartCompleted == true)
+        let requests = transport.requests
+        #expect(requests.count == 7)
+        #expect(requests[5].request.httpMethod == "HEAD")
+        #expect(requests[6].request.url?.path.hasSuffix(".json") == true)
+        // No parts were re-uploaded after the 404.
+        let partPuts = requests.filter {
+            ($0.request.url?.absoluteString ?? "").contains("partNumber=")
+        }
+        #expect(partPuts.count == 3)
+    }
+
+    @Test func complete404WithSizeMismatchClearsUploadForFreshRestart() async throws {
+        let (sourceURL, _) = try makeSource(bytes: 300)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let transport = RecordingTransport(responses: [
+            ok(createXML("fresh-1")),
+            etag("e1"), etag("e2"), etag("e3"),
+            (data: Data("<Error><Code>NoSuchUpload</Code></Error>".utf8), status: 404, headers: [:]),
+            (data: Data(), status: 200, headers: ["Content-Length": "200"]),    // wrong size
+        ])
+        let store = makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let engine = makeEngine(transport: transport, store: store)
+
+        let result = await engine.run(job: makeJob(sourceURL: sourceURL))
+
+        guard case .failed = result.state else {
+            Issue.record("expected .failed, got \(result.state)")
+            return
+        }
+        #expect(result.uploadId == nil)
+        #expect(result.completedParts.isEmpty)
+        #expect(result.multipartCompleted == false)
+        #expect(await store.load() == [result])
+        // No sidecar was written for the mismatched object.
+        #expect(!transport.requests.contains { ($0.request.url?.path ?? "").hasSuffix(".json") })
+    }
+
+    // MARK: - I1. 404 during uploadPart restarts fresh on retry
+
+    @Test func uploadPart404ClearsUploadSoRetryCreatesFreshMultipart() async throws {
+        let (sourceURL, _) = try makeSource(bytes: 300)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let transport = RecordingTransport(responses: [
+            ok(createXML("fresh-1")),
+            etag("e1"),
+            (data: Data("<Error><Code>NoSuchUpload</Code></Error>".utf8), status: 404, headers: [:]),
+            // Retry:
+            ok(createXML("fresh-2")),
+            etag("e1"), etag("e2"), etag("e3"),
+            ok(completeXML),
+            ok(""),
+        ])
+        let store = makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let engine = makeEngine(transport: transport, store: store)
+
+        let failed = await engine.run(job: makeJob(sourceURL: sourceURL))
+
+        guard case .failed = failed.state else {
+            Issue.record("expected .failed, got \(failed.state)")
+            return
+        }
+        #expect(failed.uploadId == nil)
+        #expect(failed.completedParts.isEmpty)
+        #expect(await store.load() == [failed])
+
+        let done = await engine.run(job: failed)
+
+        #expect(done.state == .done)
+        #expect(done.uploadId == "fresh-2")
+        let requests = transport.requests
+        // The retry's first request is a fresh create, not listParts.
+        #expect(requests[3].request.httpMethod == "POST")
+        #expect(requests[3].request.url?.absoluteString.hasSuffix("?uploads") == true)
+    }
+
+    // MARK: - I3. Stale bookmark is resolved, refreshed, and persisted
+
+    @Test func staleBookmarkResolvesToMovedFileAndIsRefreshed() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "engine-stale-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let originalURL = dir.appending(path: "a.mov")
+        try Data((0..<300).map { UInt8($0 % 251) }).write(to: originalURL)
+        let staleBookmark = try originalURL.bookmarkData()
+        let movedURL = dir.appending(path: "b.mov")
+        try FileManager.default.moveItem(at: originalURL, to: movedURL)
+
+        let transport = RecordingTransport(responses: [
+            ok(createXML("fresh-1")),
+            etag("e1"), etag("e2"), etag("e3"),
+            ok(completeXML),
+            ok(""),
+        ])
+        let store = makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let engine = makeEngine(transport: transport, store: store)
+        var job = makeJob(sourceURL: originalURL)   // dead path: file moved away
+        job.sourceBookmark = staleBookmark
+
+        let result = await engine.run(job: job)
+
+        // Reads went through the bookmark-resolved URL (the old path is gone).
+        #expect(result.state == .done)
+        // The stale bookmark was re-created against the resolved URL...
+        let refreshed = try #require(result.sourceBookmark)
+        #expect(refreshed != staleBookmark)
+        // Note: no isStale assertion here — the engine creates security-scoped
+        // bookmarks on macOS, and resolving those WITHOUT the scope option
+        // (as this test does) reports stale=true by design.
+        var isStale = false
+        let resolved = try URL(resolvingBookmarkData: refreshed, relativeTo: nil,
+                               bookmarkDataIsStale: &isStale)
+        #expect(resolved.lastPathComponent == "b.mov")
+        // ...and persisted.
+        #expect(await store.load().first?.sourceBookmark == refreshed)
+    }
+
+    // MARK: - I4. Persist-per-part (store snapshots)
+
+    @Test func everyPartUploadIsPersistedBeforeTheNext() async throws {
+        let (sourceURL, _) = try makeSource(bytes: 300)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let transport = RecordingTransport(responses: [
+            ok(createXML("fresh-1")),
+            etag("e1"), etag("e2"), etag("e3"),
+            ok(completeXML),
+            ok(""),
+        ])
+        let spy = SpyJobStore()
+        let engine = makeEngine(transport: transport, store: spy)
+
+        let result = await engine.run(job: makeJob(sourceURL: sourceURL))
+
+        #expect(result.state == .done)
+        let counts = spy.updates.map(\.completedParts.count)
+        #expect(spy.updates.count >= 3)
+        // Monotonically non-decreasing part counts, hitting 1, 2 and 3:
+        // proves a persist landed after every single part upload.
+        #expect(zip(counts, counts.dropFirst()).allSatisfy { $0 <= $1 })
+        #expect(counts.contains(1))
+        #expect(counts.contains(2))
+        #expect(counts.contains(3))
+        // The completion flag was persisted before the final .done snapshot.
+        let completedSnapshots = spy.updates.filter(\.multipartCompleted)
+        #expect(completedSnapshots.count >= 2)
+        #expect(completedSnapshots.first?.state != .done)
+        #expect(spy.updates.last?.state == .done)
     }
 }

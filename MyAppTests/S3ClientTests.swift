@@ -109,6 +109,30 @@ struct S3ClientTests {
         expectAllSigned(transport)
     }
 
+    // 2b. objectSize HEADs the object and parses Content-Length
+    @Test func objectSizeSendsHeadAndParsesContentLength() async throws {
+        let transport = RecordingTransport(headers: ["Content-Length": "12345"])
+        let client = makeClient(transport: transport)
+
+        let size = try await client.objectSize(key: "movies/a.mov")
+
+        #expect(size == 12345)
+        let request = transport.requests[0].request
+        #expect(request.httpMethod == "HEAD")
+        #expect(request.url?.path == "/video/movies/a.mov")
+        expectAllSigned(transport)
+    }
+
+    // 2c. objectSize propagates non-2xx as S3Error.http
+    @Test func objectSizeThrowsOnNon2xx() async throws {
+        let transport = RecordingTransport(status: 404, data: Data("missing".utf8))
+        let client = makeClient(transport: transport)
+
+        await #expect(throws: S3Error.http(status: 404, body: "missing")) {
+            _ = try await client.objectSize(key: "movies/a.mov")
+        }
+    }
+
     // 3. non-2xx throws S3Error.http
     @Test func non2xxThrowsHTTPErrorWithBody() async throws {
         let transport = RecordingTransport(status: 500, data: Data("boom".utf8))

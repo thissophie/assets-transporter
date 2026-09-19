@@ -109,6 +109,15 @@ nonisolated final class BackgroundTransport: NSObject, S3Transport, URLSessionDa
                 inflight[task.taskIdentifier] = Inflight(continuation: continuation)
                 lock.unlock()
                 task.resume()
+                // Pre-cancelled race: if the awaiting Task was cancelled before
+                // this body ran, `onCancel` already fired — its `task.cancel()`
+                // hit a task that had never been resumed and may be dropped
+                // without a completion callback, which would leave this
+                // continuation waiting forever. Re-issue the cancel now that
+                // the task is running so didCompleteWithError(.cancelled) is
+                // guaranteed to arrive and resume the continuation (exactly
+                // once — completion removes the entry under the lock).
+                if Task.isCancelled { task.cancel() }
             }
         } onCancel: {
             // Cancelling surfaces as didCompleteWithError(URLError.cancelled),

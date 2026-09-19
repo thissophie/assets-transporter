@@ -26,20 +26,31 @@ nonisolated enum UploadEngineError: Error, Equatable, CustomStringConvertible {
 /// - `job.uploadId` (not the `state` enum) is the source of truth for the
 ///   server-side upload; failures keep it and the completed-part ETags so a
 ///   retry re-uploads only the missing parts.
-/// - The JSON sidecar is written strictly AFTER `completeMultipartUpload`
-///   succeeds: a sidecar must never exist for a clip that isn't fully uploaded.
+/// - `job.multipartCompleted` is persisted the moment `completeMultipartUpload`
+///   succeeds (or is confirmed after the fact). From then on the only work a
+///   retry may do is the sidecar PUT — never part uploads or another complete,
+///   because the upload id ceases to exist server-side on completion.
+/// - The JSON sidecar is written strictly AFTER completion: a sidecar must
+///   never exist for a clip that isn't fully uploaded.
+/// - A 404 (NoSuchUpload) from `uploadPart` or an unconfirmable 404 from
+///   `completeMultipartUpload` clears `uploadId`/`completedParts` so the next
+///   retry starts a fresh upload instead of looping on a dead upload id.
 /// - Part files are staged to the temp directory with chunked (≤ 8 MB) reads
 ///   so multi-GB sources never load into memory, and are deleted on both
 ///   success and failure paths.
 actor UploadEngine {
-    private let client: S3Client
-    private let store: UploadQueueStore
-    private let partSize: Int64
+    /// Default multipart part size: 64 MB.
+    static let defaultPartSize: Int64 = 64 * 1024 * 1024
 
     /// Read no more than this much of the source into memory at once.
     private static let readChunkSize: Int64 = 8 * 1024 * 1024
 
-    init(client: S3Client, store: UploadQueueStore, partSize: Int64 = 64 * 1024 * 1024) {
+    private let client: S3Client
+    private let store: any UploadJobStoring
+    private let partSize: Int64
+
+    init(client: S3Client, store: any UploadJobStoring,
+         partSize: Int64 = UploadEngine.defaultPartSize) {
         self.client = client
         self.store = store
         self.partSize = partSize
@@ -47,7 +58,8 @@ actor UploadEngine {
 
     /// Runs one job to completion (or failure). Progress callback receives 0.0...1.0.
     /// Never throws: errors land in the returned job's `.failed` state, with
-    /// `uploadId`/`completedParts` retained for resume.
+    /// resume bookkeeping (`uploadId`, `completedParts`, `multipartCompleted`)
+    /// retained or cleared as appropriate.
     func run(job: UploadJob, progress: (@Sendable (Double) -> Void)? = nil) async -> UploadJob {
         var job = job
         if case .done = job.state { return job }
@@ -56,11 +68,26 @@ actor UploadEngine {
         defer { scopedURL?.stopAccessingSecurityScopedResource() }
 
         do {
+            // The multipart upload already completed on a previous attempt and
+            // only the sidecar PUT is outstanding. Skip all part work — the
+            // upload id no longer exists server-side, and the source file is
+            // no longer needed.
+            if job.multipartCompleted {
+                try await finish(&job)
+                return job
+            }
+
             // Resolve source access (security-scoped bookmark if present).
             let sourceURL: URL
             if let bookmark = job.sourceBookmark {
-                let resolved = try Self.resolveBookmark(bookmark)
+                let (resolved, isStale) = try Self.resolveBookmark(bookmark)
                 if resolved.startAccessingSecurityScopedResource() { scopedURL = resolved }
+                if isStale, let refreshed = Self.makeBookmark(for: resolved) {
+                    // Best effort: a refresh failure must not fail an upload
+                    // that can proceed with the resolved URL.
+                    job.sourceBookmark = refreshed
+                    try await store.update(job)
+                }
                 sourceURL = resolved
             } else {
                 sourceURL = job.sourceURL
@@ -74,11 +101,11 @@ actor UploadEngine {
                     job.completedParts = Dictionary(parts.map { ($0.partNumber, $0.etag) },
                                                     uniquingKeysWith: { _, new in new })
                     job.state = .uploading(uploadId: uploadId)
-                    try store.update(job)
+                    try await store.update(job)
                 } catch S3Error.http(let status, _) where status == 404 {
                     // NoSuchUpload: the server no longer knows this upload.
                     job.uploadId = nil
-                    try store.update(job)
+                    try await store.update(job)
                 }
             }
 
@@ -86,12 +113,13 @@ actor UploadEngine {
             if job.uploadId == nil {
                 let uploadId = try await client.createMultipartUpload(
                     key: job.clipKey,
-                    contentType: Self.contentType(forKey: job.clipKey))
+                    contentType: MediaTypes.contentType(
+                        forExtension: (job.clipKey as NSString).pathExtension))
                 job.uploadId = uploadId
                 job.state = .uploading(uploadId: uploadId)
                 job.completedParts = [:]
                 job.partSize = partSize   // the split is fixed at creation time
-                try store.update(job)
+                try await store.update(job)
             }
             let uploadId = job.uploadId!  // set by one of the branches above
 
@@ -99,7 +127,7 @@ actor UploadEngine {
             // above; make sure the persisted state reflects that we're uploading.
             if job.state != .uploading(uploadId: uploadId) {
                 job.state = .uploading(uploadId: uploadId)
-                try store.update(job)
+                try await store.update(job)
             }
 
             // Upload every missing part, in order.
@@ -110,30 +138,61 @@ actor UploadEngine {
                                                    partSize: job.partSize, totalSize: job.totalSize)
                 // Runs at the end of each iteration, including on throw.
                 defer { try? FileManager.default.removeItem(at: partURL) }
-                let etag = try await client.uploadPart(key: job.clipKey, uploadId: uploadId,
+                let etag: String
+                do {
+                    etag = try await client.uploadPart(key: job.clipKey, uploadId: uploadId,
                                                        partNumber: partNumber, fileURL: partURL)
+                } catch {
+                    // NoSuchUpload: our upload id is dead. Clear the local
+                    // record so the next retry starts fresh instead of
+                    // looping on the same 404 forever.
+                    if case S3Error.http(let status, _) = error, status == 404 {
+                        job.uploadId = nil
+                        job.completedParts = [:]
+                    }
+                    throw error
+                }
                 job.completedParts[partNumber] = etag
-                try store.update(job)
+                try await store.update(job)
                 progress?(min(Double(job.completedParts.count) / Double(partCount), 1.0))
             }
 
-            // Complete, then — strictly after success — write the sidecar.
+            // Complete. A 404 here can mean the upload ALREADY completed but
+            // the response was lost (S3 removes the upload id on completion),
+            // so confirm via the object's size before deciding.
             let parts = job.completedParts
                 .map { (partNumber: $0.key, etag: $0.value) }
                 .sorted { $0.partNumber < $1.partNumber }
-            try await client.completeMultipartUpload(key: job.clipKey, uploadId: uploadId,
-                                                     parts: parts)
-            try await client.putObject(key: BucketKeys.sidecarKey(forClipKey: job.clipKey),
-                                       data: ManifestCoding.encode(job.sidecar),
-                                       contentType: "application/json")
+            do {
+                try await client.completeMultipartUpload(key: job.clipKey, uploadId: uploadId,
+                                                         parts: parts)
+            } catch {
+                guard case S3Error.http(let status, _) = error, status == 404 else { throw error }
+                let confirmedSize: Int64?
+                do {
+                    confirmedSize = try await client.objectSize(key: job.clipKey)
+                } catch S3Error.http(let headStatus, _) where headStatus == 404 {
+                    confirmedSize = nil   // no object: the complete genuinely failed
+                }
+                guard confirmedSize == job.totalSize else {
+                    // Upload id dead and no matching object: restart fresh next retry.
+                    job.uploadId = nil
+                    job.completedParts = [:]
+                    throw error
+                }
+                // The object landed with exactly the expected size: completed.
+            }
 
-            job.state = .done
-            try store.update(job)
+            // Record completion BEFORE the sidecar PUT: if the sidecar fails,
+            // the retry must skip straight to it (see class comment).
+            job.multipartCompleted = true
+            try await store.update(job)
+
+            try await finish(&job)
             return job
         } catch {
-            // Keep uploadId + completedParts: the server-side parts survive for resume.
             job.state = .failed(message: Self.message(for: error))
-            try? store.update(job)
+            try? await store.update(job)
             return job
         }
     }
@@ -161,12 +220,13 @@ actor UploadEngine {
 
     // MARK: - Helpers
 
-    private static func contentType(forKey key: String) -> String {
-        switch (key as NSString).pathExtension.lowercased() {
-        case "mov": return "video/quicktime"
-        case "mp4": return "video/mp4"
-        default: return "application/octet-stream"
-        }
+    /// Sidecar PUT — strictly after multipart completion — then `.done`.
+    private func finish(_ job: inout UploadJob) async throws {
+        try await client.putObject(key: BucketKeys.sidecarKey(forClipKey: job.clipKey),
+                                   data: ManifestCoding.encode(job.sidecar),
+                                   contentType: "application/json")
+        job.state = .done
+        try await store.update(job)
     }
 
     private static func message(for error: Error) -> String {
@@ -176,15 +236,30 @@ actor UploadEngine {
         return String(describing: error)
     }
 
-    private static func resolveBookmark(_ data: Data) throws -> URL {
+    /// Resolves a bookmark, preferring security-scoped resolution on macOS but
+    /// falling back to plain resolution: a bookmark created WITHOUT security
+    /// scope fails scoped resolution outright (Cocoa error 259), and vice
+    /// versa a scoped bookmark still resolves plainly.
+    private static func resolveBookmark(_ data: Data) throws -> (url: URL, isStale: Bool) {
         var isStale = false
         #if os(macOS)
-        return try URL(resolvingBookmarkData: data, options: [.withSecurityScope],
-                       relativeTo: nil, bookmarkDataIsStale: &isStale)
-        #else
-        return try URL(resolvingBookmarkData: data, relativeTo: nil,
-                       bookmarkDataIsStale: &isStale)
+        if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope],
+                              relativeTo: nil, bookmarkDataIsStale: &isStale) {
+            return (url, isStale)
+        }
+        isStale = false
         #endif
+        let url = try URL(resolvingBookmarkData: data, relativeTo: nil,
+                          bookmarkDataIsStale: &isStale)
+        return (url, isStale)
+    }
+
+    /// Best-effort re-creation of a stale bookmark against its resolved URL.
+    private static func makeBookmark(for url: URL) -> Data? {
+        #if os(macOS)
+        if let data = try? url.bookmarkData(options: [.withSecurityScope]) { return data }
+        #endif
+        return try? url.bookmarkData()
     }
 
     /// Copies part `partNumber`'s byte range out of `source` into a fresh temp

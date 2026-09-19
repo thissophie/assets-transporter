@@ -1,9 +1,19 @@
 import Foundation
 
+/// Persistence interface for the upload queue. Async so implementations can
+/// serialize access (actor isolation) without blocking callers.
+nonisolated protocol UploadJobStoring: Sendable {
+    func load() async -> [UploadJob]
+    func save(_ jobs: [UploadJob]) async throws
+    func update(_ job: UploadJob) async throws
+}
+
 /// Persists the upload queue as a single JSON file so jobs survive relaunches.
 /// Local state only; corruption degrades to an empty queue rather than crashing.
-nonisolated struct UploadQueueStore: Sendable {
-    var directory: URL
+/// An actor so concurrent load-modify-save cycles serialize instead of racing
+/// (two interleaved `update` calls can no longer drop each other's writes).
+actor UploadQueueStore: UploadJobStoring {
+    nonisolated let directory: URL
 
     init(directory: URL = URL.applicationSupportDirectory.appending(path: "UploadQueue",
                                                                     directoryHint: .isDirectory)) {

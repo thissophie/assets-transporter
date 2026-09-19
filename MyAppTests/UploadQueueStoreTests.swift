@@ -5,14 +5,15 @@ import Testing
 struct UploadQueueStoreTests {
 
     /// Runs `body` with a store rooted in a unique temp directory, cleaning up after.
-    private func withStore(_ body: (UploadQueueStore) throws -> Void) throws {
+    private func withStore(_ body: (UploadQueueStore) async throws -> Void) async throws {
         let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
-        try body(UploadQueueStore(directory: dir))
+        try await body(UploadQueueStore(directory: dir))
     }
 
     private func makeJob(state: UploadJob.State = .waiting,
                          uploadId: String? = nil,
+                         multipartCompleted: Bool = false,
                          completedParts: [Int: String] = [:]) -> UploadJob {
         UploadJob(
             id: UUID(),
@@ -25,6 +26,7 @@ struct UploadQueueStoreTests {
                                  codec: "hvc1", fileSize: 1_000_000,
                                  originalFilename: "clip.mov", sourceDevice: "test"),
             uploadId: uploadId,
+            multipartCompleted: multipartCompleted,
             state: state,
             partSize: 8_388_608,
             totalSize: 1_000_000,
@@ -33,50 +35,71 @@ struct UploadQueueStoreTests {
     }
 
     // 1. Nothing on disk yet -> empty queue, no throw.
-    @Test func loadOnNonexistentDirectoryReturnsEmpty() throws {
-        try withStore { store in
-            #expect(store.load() == [])
+    @Test func loadOnNonexistentDirectoryReturnsEmpty() async throws {
+        try await withStore { store in
+            #expect(await store.load() == [])
         }
     }
 
     // 2. Full round-trip including associated values and part maps.
-    @Test func saveThenLoadRoundTripsJobsExactly() throws {
-        try withStore { store in
+    @Test func saveThenLoadRoundTripsJobsExactly() async throws {
+        try await withStore { store in
             let uploading = makeJob(state: .uploading(uploadId: "upload-abc-123"),
                                     uploadId: "upload-abc-123",
                                     completedParts: [1: "etag1", 2: "etag2"])
-            // A failed job must still round-trip its uploadId so it can resume.
+            // A failed job must still round-trip its uploadId and completion
+            // flag so it can resume.
             let failed = makeJob(state: .failed(message: "network down"),
-                                 uploadId: "upload-kept-456")
-            try store.save([uploading, failed])
-            #expect(store.load() == [uploading, failed])
+                                 uploadId: "upload-kept-456",
+                                 multipartCompleted: true)
+            try await store.save([uploading, failed])
+            #expect(await store.load() == [uploading, failed])
         }
     }
 
     // 3. update() replaces by id and appends unknown ids.
-    @Test func updateReplacesByIdAndAppendsUnknown() throws {
-        try withStore { store in
+    @Test func updateReplacesByIdAndAppendsUnknown() async throws {
+        try await withStore { store in
             var first = makeJob()
             let second = makeJob()
-            try store.save([first, second])
+            try await store.save([first, second])
 
             first.state = .done
-            try store.update(first)
-            #expect(store.load() == [first, second])
+            try await store.update(first)
+            #expect(await store.load() == [first, second])
 
             let newcomer = makeJob(state: .failed(message: "boom"))
-            try store.update(newcomer)
-            #expect(store.load() == [first, second, newcomer])
+            try await store.update(newcomer)
+            #expect(await store.load() == [first, second, newcomer])
         }
     }
 
     // 4. Corruption must never crash or throw from load().
-    @Test func corruptedFileLoadsAsEmpty() throws {
-        try withStore { store in
-            try store.save([makeJob()])
+    @Test func corruptedFileLoadsAsEmpty() async throws {
+        try await withStore { store in
+            try await store.save([makeJob()])
             let fileURL = store.directory.appending(path: "jobs.json")
             try Data([0xDE, 0xAD, 0xBE, 0xEF]).write(to: fileURL)
-            #expect(store.load() == [])
+            #expect(await store.load() == [])
+        }
+    }
+
+    // 5. Records persisted before uploadId/multipartCompleted existed must
+    //    still decode (missing keys take their defaults).
+    @Test func legacyRecordsWithoutNewFieldsStillDecode() async throws {
+        try await withStore { store in
+            try await store.save([makeJob(uploadId: "u1", multipartCompleted: true)])
+            let fileURL = store.directory.appending(path: "jobs.json")
+            var array = try #require(
+                try JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [[String: Any]])
+            array[0].removeValue(forKey: "uploadId")
+            array[0].removeValue(forKey: "multipartCompleted")
+            try JSONSerialization.data(withJSONObject: array).write(to: fileURL)
+
+            let loaded = await store.load()
+            #expect(loaded.count == 1)
+            #expect(loaded.first?.uploadId == nil)
+            #expect(loaded.first?.multipartCompleted == false)
         }
     }
 }

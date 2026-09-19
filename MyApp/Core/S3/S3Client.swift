@@ -58,6 +58,17 @@ nonisolated struct S3Client: Sendable {
         return data
     }
 
+    /// HEAD the object and return its size from the Content-Length header.
+    func objectSize(key: String) async throws -> Int64 {
+        let request = signedRequest(method: "HEAD", key: key)
+        let (_, response) = try await execute(request)
+        guard let text = response.value(forHTTPHeaderField: "Content-Length"),
+              let size = Int64(text) else {
+            throw S3Error.badResponse
+        }
+        return size
+    }
+
     func deleteObject(key: String) async throws {
         try await execute(signedRequest(method: "DELETE", key: key))
     }
