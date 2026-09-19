@@ -18,10 +18,12 @@ nonisolated enum Slug {
         return out.isEmpty ? "untitled" : out
     }
 
+    /// Ambiguity-free alphabet (no 0/o/1/l/i).
+    private static let shortIDAlphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")
+
     /// 4 chars from an ambiguity-free alphabet (no 0/o/1/l/i).
     static func shortID(using rng: inout some RandomNumberGenerator) -> String {
-        let alphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")
-        return String((0..<4).map { _ in alphabet.randomElement(using: &rng)! })
+        String((0..<4).map { _ in shortIDAlphabet.randomElement(using: &rng)! })
     }
 
     /// "acme-corp" + id -> "acme-corp-x7f2"

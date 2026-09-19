@@ -14,8 +14,10 @@ nonisolated struct Clip: Equatable, Sendable, Identifiable {
 
 nonisolated enum ClipOrdering {
     static func sorted(_ clips: [Clip]) -> [Clip] {
-        clips.sorted {
-            ($0.effectiveTime, $0.key) < ($1.effectiveTime, $1.key)
-        }
+        // Precompute effectiveTime once per clip: it may parse the key
+        // timestamp, and DateFormatter parses are expensive.
+        clips.map { ($0.effectiveTime, $0) }
+            .sorted { ($0.0, $0.1.key) < ($1.0, $1.1.key) }
+            .map(\.1)
     }
 }

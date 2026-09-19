@@ -14,7 +14,7 @@ struct ManifestTests {
         let back = try ManifestCoding.decode(ClipSidecar.self, from: data)
         #expect(back == clip)
         // dates must be ISO8601 so other tools can read the bucket
-        #expect(String(data: data, encoding: .utf8)!.contains("2026-09-"))
+        #expect(String(data: data, encoding: .utf8)!.contains("2026-09-10T00:26:40Z"))
     }
 
     @Test func projectManifestDefaults() throws {

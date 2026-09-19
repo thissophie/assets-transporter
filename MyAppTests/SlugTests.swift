@@ -9,6 +9,10 @@ struct SlugTests {
         #expect(Slug.make(from: "***") == "untitled")
     }
 
+    @Test func slugWithIDJoinsSlugAndID() {
+        #expect(Slug.slugWithID("Acme Corp", id: "x7f2") == "acme-corp-x7f2")
+    }
+
     @Test func shortIDIsFourSafeChars() {
         var rng = SystemRandomNumberGenerator()
         let id = Slug.shortID(using: &rng)

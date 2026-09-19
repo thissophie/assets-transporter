@@ -24,8 +24,12 @@ nonisolated enum BucketKeys {
     static func clipKey(client: String, project: String, capturedAt: Date,
                         cameraLabel: String?, id: String, ext: String) -> String {
         let timestamp = timestampFormatter.string(from: capturedAt)
-        let cam = cameraLabel.map(Slug.make) ?? "cam"
-        return "\(client)/\(project)/clips/\(timestamp)_\(cam)_\(id).\(ext)"
+        let cam = cameraLabel.flatMap {
+            $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : Slug.make(from: $0)
+        } ?? "cam"
+        let cleanExt = ext.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let suffix = cleanExt.isEmpty ? "" : ".\(cleanExt)"
+        return "\(client)/\(project)/clips/\(timestamp)_\(cam)_\(id)\(suffix)"
     }
 
     static func sidecarKey(forClipKey clipKey: String) -> String {

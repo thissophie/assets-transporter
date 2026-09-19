@@ -30,6 +30,21 @@ struct BucketKeyTests {
         #expect(!BucketKeys.isClipFile("a/b/clips/x.mov.json"))
     }
 
+    @Test func clipKeyNormalizesInputs() {
+        func key(cameraLabel: String? = "Cam A", ext: String) -> String {
+            BucketKeys.clipKey(client: "c", project: "p", capturedAt: referenceDate,
+                               cameraLabel: cameraLabel, id: "e51f", ext: ext)
+        }
+        // extension is lowercased and leading dots are stripped
+        #expect(key(ext: "MOV") == "c/p/clips/2026-09-19_183042_cam-a_e51f.mov")
+        #expect(key(ext: ".mov") == "c/p/clips/2026-09-19_183042_cam-a_e51f.mov")
+        // empty extension: no trailing dot
+        #expect(key(ext: "") == "c/p/clips/2026-09-19_183042_cam-a_e51f")
+        // empty/whitespace-only camera label falls back to "cam"
+        #expect(key(cameraLabel: "", ext: "mov") == "c/p/clips/2026-09-19_183042_cam_e51f.mov")
+        #expect(key(cameraLabel: "   ", ext: "mov") == "c/p/clips/2026-09-19_183042_cam_e51f.mov")
+    }
+
     @Test func parseClipTimestampRoundTrips() {
         let key = BucketKeys.clipKey(client: "acme-corp-x7f2", project: "spring-gala-k9q1",
                                      capturedAt: referenceDate, cameraLabel: "Cam A", id: "e51f", ext: "mov")
