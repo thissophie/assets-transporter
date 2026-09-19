@@ -5,7 +5,8 @@ import Testing
 /// Canned-response transport that records every request handed to it.
 nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
     private let lock = NSLock()
-    private var recorded: [(request: URLRequest, uploadFile: URL?)] = []
+    private var recorded: [(request: URLRequest, uploadFile: URL?,
+                            uploadFileSize: Int64?, uploadFileData: Data?)] = []
     private var responses: [(data: Data, status: Int, headers: [String: String])]
     private var keyedResponses: [(substring: String, data: Data, status: Int)] = []
 
@@ -17,7 +18,8 @@ nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
         self.init(responses: [(data: data, status: status, headers: headers)])
     }
 
-    var requests: [(request: URLRequest, uploadFile: URL?)] {
+    var requests: [(request: URLRequest, uploadFile: URL?,
+                    uploadFileSize: Int64?, uploadFileData: Data?)] {
         lock.lock(); defer { lock.unlock() }
         return recorded
     }
@@ -31,8 +33,13 @@ nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
     }
 
     func perform(_ request: URLRequest, uploadFile: URL?) async throws -> (Data, HTTPURLResponse) {
+        // Snapshot the upload file's contents at perform time: callers may
+        // delete temporary part files as soon as the "network" call returns.
+        let uploadFileData = uploadFile.flatMap { try? Data(contentsOf: $0) }
         lock.lock()
-        recorded.append((request: request, uploadFile: uploadFile))
+        recorded.append((request: request, uploadFile: uploadFile,
+                         uploadFileSize: uploadFileData.map { Int64($0.count) },
+                         uploadFileData: uploadFileData))
         let urlString = request.url?.absoluteString ?? ""
         let decodedURL = urlString.removingPercentEncoding ?? urlString
         let canned: (data: Data, status: Int, headers: [String: String])

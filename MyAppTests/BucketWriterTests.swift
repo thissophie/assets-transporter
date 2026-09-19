@@ -12,7 +12,8 @@ struct BucketWriterTests {
     }
 
     private func decodeBody<T: Decodable>(_ type: T.Type,
-                                          from entry: (request: URLRequest, uploadFile: URL?)) throws -> T {
+                                          from entry: (request: URLRequest, uploadFile: URL?,
+                                                       uploadFileSize: Int64?, uploadFileData: Data?)) throws -> T {
         let body = try #require(entry.request.httpBody)
         return try ManifestCoding.decode(type, from: body)
     }

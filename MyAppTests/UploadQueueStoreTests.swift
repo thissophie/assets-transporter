@@ -12,6 +12,7 @@ struct UploadQueueStoreTests {
     }
 
     private func makeJob(state: UploadJob.State = .waiting,
+                         uploadId: String? = nil,
                          completedParts: [Int: String] = [:]) -> UploadJob {
         UploadJob(
             id: UUID(),
@@ -23,6 +24,7 @@ struct UploadQueueStoreTests {
                                  orderOverride: nil, duration: 12.5, width: 3840, height: 2160,
                                  codec: "hvc1", fileSize: 1_000_000,
                                  originalFilename: "clip.mov", sourceDevice: "test"),
+            uploadId: uploadId,
             state: state,
             partSize: 8_388_608,
             totalSize: 1_000_000,
@@ -41,8 +43,11 @@ struct UploadQueueStoreTests {
     @Test func saveThenLoadRoundTripsJobsExactly() throws {
         try withStore { store in
             let uploading = makeJob(state: .uploading(uploadId: "upload-abc-123"),
+                                    uploadId: "upload-abc-123",
                                     completedParts: [1: "etag1", 2: "etag2"])
-            let failed = makeJob(state: .failed(message: "network down"))
+            // A failed job must still round-trip its uploadId so it can resume.
+            let failed = makeJob(state: .failed(message: "network down"),
+                                 uploadId: "upload-kept-456")
             try store.save([uploading, failed])
             #expect(store.load() == [uploading, failed])
         }
