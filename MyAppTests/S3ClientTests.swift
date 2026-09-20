@@ -8,7 +8,8 @@ nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
     private var recorded: [(request: URLRequest, uploadFile: URL?,
                             uploadFileSize: Int64?, uploadFileData: Data?)] = []
     private var responses: [(data: Data, status: Int, headers: [String: String])]
-    private var keyedResponses: [(substring: String, data: Data, status: Int)] = []
+    private var keyedResponses: [(substring: String, data: Data, status: Int,
+                                  headers: [String: String])] = []
 
     init(responses: [(data: Data, status: Int, headers: [String: String])]) {
         self.responses = responses
@@ -27,9 +28,23 @@ nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
     /// Keyed responder mode: any request whose (percent-decoded) URL contains
     /// `keySubstring` gets this response. Keyed responses take priority over the
     /// FIFO queue and are not consumed, so concurrent fetch order doesn't matter.
-    func respond(to keySubstring: String, with response: (Data, Int)) {
+    /// A 200-status keyed response honors a `Range: bytes=a-b` request header by
+    /// returning the requested slice with status 206 (like a real S3 server).
+    func respond(to keySubstring: String, with response: (Data, Int),
+                 headers: [String: String] = [:]) {
         lock.lock(); defer { lock.unlock() }
-        keyedResponses.append((substring: keySubstring, data: response.0, status: response.1))
+        keyedResponses.append((substring: keySubstring, data: response.0,
+                               status: response.1, headers: headers))
+    }
+
+    /// Slices `data` per a `bytes=a-b` Range header value, clamping the upper
+    /// bound to the data's extent (as S3 does). Nil when out of range.
+    private static func slice(_ data: Data, rangeHeader: String) -> Data? {
+        guard rangeHeader.hasPrefix("bytes=") else { return nil }
+        let bounds = rangeHeader.dropFirst("bytes=".count).split(separator: "-")
+        guard bounds.count == 2, let lower = Int(bounds[0]), let upper = Int(bounds[1]),
+              lower >= 0, lower <= upper, lower < data.count else { return nil }
+        return data.subdata(in: lower..<min(upper + 1, data.count))
     }
 
     func perform(_ request: URLRequest, uploadFile: URL?) async throws -> (Data, HTTPURLResponse) {
@@ -44,7 +59,13 @@ nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {
         let decodedURL = urlString.removingPercentEncoding ?? urlString
         let canned: (data: Data, status: Int, headers: [String: String])
         if let keyed = keyedResponses.first(where: { decodedURL.contains($0.substring) }) {
-            canned = (data: keyed.data, status: keyed.status, headers: [:])
+            if keyed.status == 200,
+               let rangeHeader = request.value(forHTTPHeaderField: "Range"),
+               let sliced = Self.slice(keyed.data, rangeHeader: rangeHeader) {
+                canned = (data: sliced, status: 206, headers: keyed.headers)
+            } else {
+                canned = (data: keyed.data, status: keyed.status, headers: keyed.headers)
+            }
         } else if responses.isEmpty {
             canned = (data: Data(), status: 200, headers: [String: String]())
         } else {

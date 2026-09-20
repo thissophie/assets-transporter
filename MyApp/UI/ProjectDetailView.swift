@@ -25,6 +25,8 @@ struct ProjectDetailView: View {
     @State private var editingClip: Clip?
 
     @State private var showingFileImporter = false
+    @State private var showingDownloadFolderPicker = false
+    @State private var download: DownloadController?
     @State private var pendingIntakeURLs: [URL] = []
     @State private var showingCameraLabelPrompt = false
     /// Remembered for the rest of the session so multi-batch ingests from the
@@ -57,6 +59,9 @@ struct ProjectDetailView: View {
                     queueIntake(urls)
                 }
             }
+            .sheet(item: $download) { controller in
+                DownloadProgressSheet(controller: controller) { download = nil }
+            }
     }
 
     // MARK: - Content
@@ -79,6 +84,15 @@ struct ProjectDetailView: View {
         VStack(spacing: 0) {
             statusHeader
             listOrEmpty
+        }
+        // Attached here (not next to the intake fileImporter in `body`) so the
+        // two importers live on different views.
+        .fileImporter(isPresented: $showingDownloadFolderPicker,
+                      allowedContentTypes: [.folder],
+                      allowsMultipleSelection: false) { result in
+            if case .success(let urls) = result, let directory = urls.first {
+                startDownload(into: directory)
+            }
         }
     }
 
@@ -156,6 +170,13 @@ struct ProjectDetailView: View {
     // MARK: - Toolbar
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        // Whole-project download (per-clip selection deferred).
+        ToolbarItem {
+            Button("Download…", systemImage: "arrow.down.circle") {
+                showingDownloadFolderPicker = true
+            }
+            .disabled(app.client == nil || clips.isEmpty || download != nil)
+        }
         #if os(macOS)
         ToolbarItem {
             Button("Refresh", systemImage: "arrow.clockwise") {
@@ -288,6 +309,18 @@ struct ProjectDetailView: View {
     }
     #endif
 
+    // MARK: - Download
+
+    /// Downloads the whole project into the picked directory, using the SAME
+    /// ordering the list shows: `clips` is already sorted by `listClips`, and
+    /// `DownloadNaming` prefixes filenames from that order.
+    private func startDownload(into directory: URL) {
+        guard let client = app.client, !clips.isEmpty else { return }
+        let controller = DownloadController(client: client)
+        controller.start(clips: clips, manifest: project.manifest, directory: directory)
+        download = controller
+    }
+
     private func refresh() async {
         guard let reader = app.reader else { return }
         isLoading = true
@@ -300,6 +333,136 @@ struct ProjectDetailView: View {
             if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             loadError = "Could not load clips: \(String(describing: error))"
         }
+    }
+}
+
+// MARK: - Download flow
+
+/// Owns one project download: builds the ordered `DownloadEngine.Item` list,
+/// holds security-scoped access to the destination directory for the whole
+/// download, and republishes engine progress for the sheet.
+@Observable
+private final class DownloadController: Identifiable {
+    enum Phase {
+        case running
+        case finished
+        case cancelled
+        case failed(String)
+    }
+
+    let id = UUID()
+    private(set) var phase: Phase = .running
+    private(set) var completedBytes: Int64 = 0
+    private(set) var totalBytes: Int64 = 0
+    private(set) var clipCount = 0
+
+    private let engine: DownloadEngine
+    private var task: Task<Void, Never>?
+
+    var isRunning: Bool {
+        if case .running = phase { return true }
+        return false
+    }
+
+    init(client: S3Client) {
+        engine = DownloadEngine(client: client)
+    }
+
+    /// `clips` must already be in list order; filenames come from
+    /// `DownloadNaming` so downloads carry the same order prefixes.
+    func start(clips: [Clip], manifest: ProjectManifest, directory: URL) {
+        guard task == nil else { return }
+        clipCount = clips.count
+        let filenames = DownloadNaming.filenames(forOrdered: clips)
+        let items = zip(clips, filenames).map { DownloadEngine.Item(clip: $0, filename: $1) }
+        let engine = engine
+        task = Task {
+            // Security-scoped access is the caller's job: hold it across the
+            // whole await, including the engine's final project.json write.
+            let accessing = directory.startAccessingSecurityScopedResource()
+            defer { if accessing { directory.stopAccessingSecurityScopedResource() } }
+            do {
+                try await engine.download(items: items, into: directory,
+                                          projectManifest: manifest) { completed, total in
+                    // The outer task already keeps `self` alive for the whole
+                    // download, so a strong capture here adds nothing to worry
+                    // about; hop to the main actor to publish.
+                    Task { @MainActor in
+                        self.completedBytes = completed
+                        self.totalBytes = total
+                    }
+                }
+                phase = .finished
+            } catch is CancellationError {
+                phase = .cancelled
+            } catch {
+                phase = .failed(String(describing: error))
+            }
+        }
+    }
+
+    /// Cooperative: the engine stops at the next chunk boundary; partial
+    /// files stay on disk for a later resume.
+    func cancel() {
+        engine.cancel()
+    }
+}
+
+/// Progress sheet for a running download: byte-count progress bar with a
+/// Cancel button, then a success / cancelled / failed end state.
+private struct DownloadProgressSheet: View {
+    var controller: DownloadController
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            switch controller.phase {
+            case .running:
+                Text("Downloading ^[\(controller.clipCount) clip](inflect: true)…")
+                    .font(.headline)
+                ProgressView(value: fractionCompleted)
+                Text("\(Text(controller.completedBytes, format: .byteCount(style: .file))) of \(Text(controller.totalBytes, format: .byteCount(style: .file)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Button("Cancel", role: .cancel) { controller.cancel() }
+            case .finished:
+                Label("Downloaded ^[\(controller.clipCount) clip](inflect: true)",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.green)
+                Button("Done", action: onClose)
+                    .keyboardShortcut(.defaultAction)
+            case .cancelled:
+                Label("Download cancelled", systemImage: "xmark.circle")
+                    .font(.headline)
+                Text("Partial files were kept — downloading again resumes where they left off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Close", action: onClose)
+            case .failed(let message):
+                Label("Download failed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.red)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                Button("Close", action: onClose)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 300)
+        .interactiveDismissDisabled(controller.isRunning)
+        .presentationDetents([.medium])
+    }
+
+    /// nil totals (not yet known) render as indeterminate progress.
+    private var fractionCompleted: Double? {
+        guard controller.totalBytes > 0 else { return nil }
+        return Double(controller.completedBytes) / Double(controller.totalBytes)
     }
 }
 
