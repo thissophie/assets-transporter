@@ -76,6 +76,19 @@ import UIKit
                 parts.count > 1 ? String(parts[1]) : "")
     }
 
+    /// True when a retry of `jobID` may be enqueued: not currently running,
+    /// not already pending, and — when the stored state is known — not already
+    /// uploaded. `retry` applies this twice: synchronously on entry (cheap
+    /// fast path) and again after the store-load suspension, because a rapid
+    /// double-tap can pass the first check twice.
+    nonisolated static func shouldEnqueueRetry(jobID: UUID, runningJobID: UUID?,
+                                               pendingIDs: [UUID],
+                                               jobState: UploadJob.State?) -> Bool {
+        guard runningJobID != jobID, !pendingIDs.contains(jobID) else { return false }
+        if jobState == .done { return false }
+        return true
+    }
+
     // MARK: - Intake
 
     /// Stages, probes, and enqueues each file, then drains the queue
@@ -94,12 +107,21 @@ import UIKit
     /// Reloads a failed job from the store and re-runs it (the staged file was
     /// kept on failure precisely for this).
     func retry(jobID: UUID, app: AppModel) {
-        guard runningJobID != jobID, !pending.contains(where: { $0.id == jobID }) else { return }
+        guard Self.shouldEnqueueRetry(jobID: jobID, runningJobID: runningJobID,
+                                      pendingIDs: pending.map(\.id), jobState: nil) else { return }
         Task {
             guard let job = await app.store.load().first(where: { $0.id == jobID }) else {
                 lastError = "That upload is no longer in the queue."
                 return
             }
+            // Re-check after the store-load suspension: a rapid double-tap
+            // passes the synchronous guard twice, and only the first may
+            // enqueue (the second would re-run a stale snapshot and could
+            // persist .failed over the store's .done). No suspension between
+            // this check and the append below, so the decision stays valid.
+            guard Self.shouldEnqueueRetry(jobID: jobID, runningJobID: runningJobID,
+                                          pendingIDs: pending.map(\.id),
+                                          jobState: job.state) else { return }
             if let index = active.firstIndex(where: { $0.id == jobID }) {
                 active[index].state = .waiting
                 active[index].progress = 0
