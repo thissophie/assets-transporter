@@ -203,7 +203,7 @@ struct ClientListView: View {
                                                 preview: preview)
             } catch {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-                browse.lastError = "Could not check what deleting would remove: \(String(describing: error))"
+                browse.lastError = "Could not check what deleting would remove: \(ErrorText.describe(error))"
             }
         }
     }
@@ -379,7 +379,7 @@ struct ProjectListView: View {
                                                 preview: preview)
             } catch {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-                browse.lastError = "Could not check what deleting would remove: \(String(describing: error))"
+                browse.lastError = "Could not check what deleting would remove: \(ErrorText.describe(error))"
             }
         }
     }
@@ -474,6 +474,9 @@ private struct UploadQueueButton: View {
                     }
                 }
         }
+        // The visual badge is a tiny overlay; give assistive tech the count
+        // as part of the button's name instead.
+        .accessibilityLabel(activeCount > 0 ? "Uploads, \(activeCount) active" : "Uploads")
     }
 }
 
@@ -505,6 +508,7 @@ private struct BrowseRow: View {
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)   // purely decorative
             #endif
         }
         .contentShape(Rectangle())

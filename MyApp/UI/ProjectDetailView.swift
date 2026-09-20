@@ -47,6 +47,10 @@ struct ProjectDetailView: View {
             .navigationTitle(project.manifest.displayName)
             .toolbar { toolbarContent }
             .task(id: project.prefix) {
+                // Clear the previous project's rows/error immediately so a
+                // slow refresh doesn't flash stale content after switching.
+                clips = []
+                loadError = nil
                 intake.onClipsChanged = { Task { await refresh() } }
                 await refresh()
             }
@@ -178,7 +182,7 @@ struct ProjectDetailView: View {
                 try await writer.deleteClip(clip)
                 await refresh()
             } catch {
-                loadError = "Could not delete “\(clip.sidecar.displayName)”: \(String(describing: error))"
+                loadError = "Could not delete “\(clip.sidecar.displayName)”: \(ErrorText.describe(error))"
             }
             isDeletingClip = false
         }
@@ -302,8 +306,16 @@ struct ProjectDetailView: View {
     }
     #endif
 
-    /// Dropped files pass through as-is; dropped folders expand one level to
-    /// files with a MediaTypes-known video extension (sorted by name).
+    /// Dropped files pass through as-is (their own security scope is resolved
+    /// again at staging time). Dropped folders expand one level to video files
+    /// (MediaTypes-known extension, sorted by name) — but a child of a
+    /// security-scoped folder is only readable while the FOLDER's scope is
+    /// held, and staging runs later (after the camera-label sheet). So each
+    /// child is copied NOW, while the scope is held, into
+    /// `IntakeModel.photoIntakeDirectory/<UUID>/<originalName>` — the same
+    /// temp-copy mechanism PhotosPicker imports use; staging consumes and
+    /// deletes those copies. Unreadable/uncopyable children are skipped
+    /// (best effort).
     nonisolated static func expandDropped(_ urls: [URL]) -> [URL] {
         let fm = FileManager.default
         var out: [URL] = []
@@ -313,12 +325,23 @@ struct ProjectDetailView: View {
             var isDirectory: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue {
-                let children = (try? fm.contentsOfDirectory(
+                let children = ((try? fm.contentsOfDirectory(
                     at: url, includingPropertiesForKeys: nil,
-                    options: [.skipsHiddenFiles])) ?? []
-                out += children
+                    options: [.skipsHiddenFiles])) ?? [])
                     .filter { isKnownVideoFile($0) }
                     .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                for child in children {
+                    let folder = IntakeModel.photoIntakeDirectory
+                        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+                    do {
+                        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+                        let destination = folder.appending(path: child.lastPathComponent)
+                        try fm.copyItem(at: child, to: destination)
+                        out.append(destination)
+                    } catch {
+                        try? fm.removeItem(at: folder)
+                    }
+                }
             } else {
                 out.append(url)
             }
@@ -344,7 +367,7 @@ struct ProjectDetailView: View {
                         urls.append(movie.url)
                     }
                 } catch {
-                    intake.lastError = "Could not import a video from Photos: \(String(describing: error))"
+                    intake.lastError = "Could not import a video from Photos: \(ErrorText.describe(error))"
                 }
             }
             isImportingPhotos = false
@@ -375,7 +398,7 @@ struct ProjectDetailView: View {
         } catch {
             // A refresh cancelled by view teardown / project switch is not a failure.
             if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-            loadError = "Could not load clips: \(String(describing: error))"
+            loadError = "Could not load clips: \(ErrorText.describe(error))"
         }
     }
 }
@@ -440,7 +463,7 @@ private final class DownloadController: Identifiable {
             } catch is CancellationError {
                 phase = .cancelled
             } catch {
-                phase = .failed(String(describing: error))
+                phase = .failed(ErrorText.describe(error))
             }
         }
     }
@@ -537,7 +560,8 @@ nonisolated private struct IntakeMovie: Transferable {
 
 /// One stored (remote) clip. Static video icon — see `ProjectDetailView` doc
 /// comment for why remote clips don't get real thumbnails in this task.
-private struct ClipRow: View {
+/// Internal (not file-private) so tests can pin `formatDuration`.
+struct ClipRow: View {
     var clip: Clip
 
     var body: some View {
@@ -565,8 +589,9 @@ private struct ClipRow: View {
         .padding(.vertical, 2)
     }
 
-    /// 83.4 -> "1:23"; hours roll into minutes (m:ss per spec).
-    static func formatDuration(_ seconds: Double) -> String {
+    /// 83.4 -> "1:23"; hours deliberately roll into minutes (3661 -> "61:01")
+    /// — clip rows use one compact m:ss format per spec. Pinned by tests.
+    nonisolated static func formatDuration(_ seconds: Double) -> String {
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
     }
@@ -749,7 +774,7 @@ private struct ClipEditSheet: View {
                 await onSaved()
                 dismiss()
             } catch {
-                saveError = "Could not save: \(String(describing: error))"
+                saveError = "Could not save: \(ErrorText.describe(error))"
             }
             isSaving = false
         }

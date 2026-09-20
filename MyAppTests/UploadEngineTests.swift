@@ -356,6 +356,38 @@ struct UploadEngineTests {
         #expect(deletes.count == 2)
     }
 
+    // Cross-device safety: multiple devices upload into the same bucket, so
+    // "not in OUR store" says nothing about another device's in-flight
+    // upload. With a cutoff, only uploads verifiably older are aborted;
+    // recent and unknown-age uploads are left alone.
+    @Test func abandonStaleUploadsWithCutoffSkipsRecentAndUnknownAge() async throws {
+        let recent = ISO8601DateFormatter().string(from: Date())
+        let xml = """
+        <ListMultipartUploadsResult>
+          <Upload><Key>acme/old.mov</Key><UploadId>u-old</UploadId><Initiated>2020-01-01T00:00:00.000Z</Initiated></Upload>
+          <Upload><Key>acme/new.mov</Key><UploadId>u-new</UploadId><Initiated>\(recent)</Initiated></Upload>
+          <Upload><Key>acme/unknown.mov</Key><UploadId>u-unknown</UploadId></Upload>
+        </ListMultipartUploadsResult>
+        """
+        let transport = RecordingTransport(responses: [
+            ok(xml),
+            (data: Data(), status: 204, headers: [:]),
+        ])
+        let store = makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let engine = makeEngine(transport: transport, store: store)
+
+        let aborted = try await engine.abandonStaleUploads(
+            prefix: "acme/", liveJobs: [],
+            olderThan: Date(timeIntervalSinceNow: -48 * 60 * 60))
+
+        #expect(aborted == 1)
+        let deletes = transport.requests.filter { $0.request.httpMethod == "DELETE" }
+        #expect(deletes.count == 1)
+        #expect(deletes[0].request.url?.path == "/video/acme/old.mov")
+        #expect(deletes[0].request.url?.absoluteString.contains("uploadId=u-old") == true)
+    }
+
     @Test func abandonStaleUploadsPropagatesListingErrors() async throws {
         let transport = RecordingTransport(status: 500, data: Data("boom".utf8))
         let store = makeStore()

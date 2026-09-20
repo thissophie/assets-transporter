@@ -68,6 +68,7 @@ struct UploadQueueView: View {
             List(jobs) { job in
                 UploadQueueRow(job: job,
                                liveProgress: liveProgress(for: job),
+                               isRunning: job.id == app.intake.runningJobID,
                                onRetry: { app.intake.retry(jobID: job.id, app: app) },
                                onRemove: { remove(job) })
             }
@@ -126,11 +127,14 @@ struct UploadQueueView: View {
     }
 }
 
-/// One persisted job: name, destination key, state badge, size, and the
-/// actions its state allows (failed → Retry/Remove, done → Remove).
+/// One persisted job: name, destination key, state badge, size, and its
+/// actions — Retry for failed jobs, Remove for anything not currently
+/// running (the running job belongs to the loop; `IntakeModel.remove` also
+/// refuses it as the authoritative guard).
 private struct UploadQueueRow: View {
     var job: UploadJob
     var liveProgress: Double?
+    var isRunning: Bool
     var onRetry: () -> Void
     var onRemove: () -> Void
 
@@ -187,15 +191,12 @@ private struct UploadQueueRow: View {
     }
 
     @ViewBuilder private var actions: some View {
-        switch job.state {
-        case .failed:
+        if case .failed = job.state {
             Button("Retry", systemImage: "arrow.clockwise", action: onRetry)
                 .buttonStyle(.borderless)
+        }
+        if !isRunning {
             removeButton
-        case .done:
-            removeButton
-        case .waiting, .uploading:
-            EmptyView()
         }
     }
 

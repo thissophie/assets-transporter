@@ -81,4 +81,42 @@ struct IntakeModelTests {
         #expect(!IntakeModel.shouldEnqueueRetry(jobID: id, runningJobID: nil,
                                                 pendingIDs: [], jobState: .done))
     }
+
+    // MARK: - resumableJobs / orphanedStagingFiles
+    //
+    // Pure selection logic for the configure-time maintenance pass: which
+    // persisted jobs get re-run, and which staged files are orphans.
+
+    private func makeJob(state: UploadJob.State,
+                         sourceURL: URL = URL(fileURLWithPath: "/tmp/x.mov")) -> UploadJob {
+        UploadJob(id: UUID(), sourceURL: sourceURL, sourceBookmark: nil,
+                  clipKey: "acme/gala/clips/x.mov",
+                  sidecar: ClipSidecar(displayName: "X", cameraLabel: nil, notes: nil,
+                                       capturedAt: nil, orderOverride: nil, duration: nil,
+                                       width: nil, height: nil, codec: nil, fileSize: 1,
+                                       originalFilename: "x.mov", sourceDevice: "test"),
+                  state: state, partSize: 64, totalSize: 1, completedParts: [:])
+    }
+
+    @Test func resumableJobsSelectsWaitingAndUploadingInStoreOrder() {
+        let waiting = makeJob(state: .waiting)
+        let uploading = makeJob(state: .uploading(uploadId: "u1"))
+        let failed = makeJob(state: .failed(message: "boom"))
+        let done = makeJob(state: .done)
+
+        let resumable = IntakeModel.resumableJobs(from: [failed, waiting, done, uploading])
+
+        // Failed stays for the user's explicit Retry; done has nothing to do.
+        #expect(resumable.map(\.id) == [waiting.id, uploading.id])
+    }
+
+    @Test func orphanedStagingFilesExcludesJobReferencedSources() {
+        let referenced = URL(fileURLWithPath: "/staging/a.mov")
+        let orphan = URL(fileURLWithPath: "/staging/b.mov")
+        let job = makeJob(state: .failed(message: "boom"), sourceURL: referenced)
+
+        let orphans = IntakeModel.orphanedStagingFiles(files: [referenced, orphan], jobs: [job])
+
+        #expect(orphans == [orphan])
+    }
 }

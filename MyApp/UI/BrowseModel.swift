@@ -41,7 +41,7 @@ import Observation
             // A refresh cancelled by view teardown is not a failure.
             if Self.isCancellation(error) { return }
             if clients.isEmpty {
-                lastError = "Could not load clients: \(Self.describe(error))"
+                lastError = "Could not load clients: \(ErrorText.describe(error))"
             } else {
                 isOffline = true
             }
@@ -60,7 +60,7 @@ import Observation
             if projectsByClient[clientPrefix]?.isEmpty == false {
                 isOffline = true
             } else {
-                lastError = "Could not load projects: \(Self.describe(error))"
+                lastError = "Could not load projects: \(ErrorText.describe(error))"
             }
         }
     }
@@ -138,7 +138,7 @@ import Observation
             await refreshProjects(reader: reader, clientPrefix: clientPrefix)
         } catch {
             projectsByClient[clientPrefix] = snapshot
-            lastError = "Could not save the new order: \(Self.describe(error))"
+            lastError = "Could not save the new order: \(ErrorText.describe(error))"
         }
     }
 
@@ -169,7 +169,7 @@ import Observation
         do {
             try await body()
         } catch {
-            lastError = Self.describe(error)
+            lastError = ErrorText.describe(error)
         }
     }
 
@@ -177,17 +177,5 @@ import Observation
     /// a user-facing failure.
     private nonisolated static func isCancellation(_ error: any Error) -> Bool {
         error is CancellationError || (error as? URLError)?.code == .cancelled
-    }
-
-    /// User-facing error text. Never includes credentials.
-    private nonisolated static func describe(_ error: any Error) -> String {
-        switch error {
-        case S3Error.http(let status, _):
-            return "server returned HTTP \(status)"
-        case let urlError as URLError:
-            return urlError.localizedDescription
-        default:
-            return String(describing: error)
-        }
     }
 }

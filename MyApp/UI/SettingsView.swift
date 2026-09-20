@@ -171,7 +171,7 @@ struct SettingsView: View {
             try model.apply(settings)
             saveConfirmation = "Settings saved."
         } catch {
-            validationError = "Could not save settings: \(Self.describe(error))"
+            validationError = "Could not save settings: \(ErrorText.describe(error))"
         }
     }
 
@@ -191,22 +191,11 @@ struct SettingsView: View {
                 let count = listing.commonPrefixes.count + listing.objects.count
                 testResult = "✓ Connected — \(count) top-level entries"
             } catch {
-                testResult = "Connection failed: \(Self.describe(error))"
+                testResult = "Connection failed: \(ErrorText.describe(error))"
             }
         }
     }
 
-    /// User-facing error text. Never includes credentials.
-    private static func describe(_ error: any Error) -> String {
-        switch error {
-        case S3Error.http(let status, _):
-            return "server returned HTTP \(status)"
-        case let urlError as URLError:
-            return urlError.localizedDescription
-        default:
-            return String(describing: error)
-        }
-    }
 }
 
 #Preview {

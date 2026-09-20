@@ -191,9 +191,13 @@ nonisolated struct S3Client: Sendable {
     }
 
     /// GET `?uploads&prefix=...`; returns in-progress multipart uploads,
-    /// following key-marker/upload-id-marker pagination.
-    func listMultipartUploads(prefix: String) async throws -> [(key: String, uploadId: String)] {
-        var uploads: [(key: String, uploadId: String)] = []
+    /// following key-marker/upload-id-marker pagination. `initiated` is the
+    /// upload's start time (nil when the server omits it or it fails to
+    /// parse) — used to age-gate the stale-upload sweep.
+    func listMultipartUploads(
+        prefix: String
+    ) async throws -> [(key: String, uploadId: String, initiated: Date?)] {
+        var uploads: [(key: String, uploadId: String, initiated: Date?)] = []
         var markers: (key: String, uploadId: String)?
 
         repeat {
@@ -212,7 +216,8 @@ nonisolated struct S3Client: Sendable {
             }
             uploads.append(contentsOf: collector.groups.compactMap { group in
                 guard let key = group["Key"], let uploadId = group["UploadId"] else { return nil }
-                return (key: key, uploadId: uploadId)
+                return (key: key, uploadId: uploadId,
+                        initiated: group["Initiated"].flatMap(S3Timestamp.parse))
             })
             if collector.topLevel["IsTruncated"] == "true",
                let nextKey = collector.topLevel["NextKeyMarker"],

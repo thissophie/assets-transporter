@@ -198,9 +198,17 @@ actor UploadEngine {
     }
 
     /// Aborts server-side multipart uploads that no live job owns.
+    ///
+    /// `olderThan` is the cross-device guard: multiple devices upload into the
+    /// same bucket, so "not in OUR store" says nothing about another device's
+    /// in-flight upload. When set, only uploads whose `Initiated` date is
+    /// known AND earlier than the cutoff are aborted — recent or unknown-age
+    /// uploads are left alone.
+    ///
     /// Individual abort failures are swallowed (best effort); listing errors propagate.
     /// Returns the number of uploads successfully aborted.
-    func abandonStaleUploads(prefix: String, liveJobs: [UploadJob]) async throws -> Int {
+    func abandonStaleUploads(prefix: String, liveJobs: [UploadJob],
+                             olderThan: Date? = nil) async throws -> Int {
         let uploads = try await client.listMultipartUploads(prefix: prefix)
         var aborted = 0
         for upload in uploads {
@@ -208,6 +216,9 @@ actor UploadEngine {
                 $0.uploadId == upload.uploadId && $0.clipKey == upload.key
             }
             if isLive { continue }
+            if let olderThan {
+                guard let initiated = upload.initiated, initiated < olderThan else { continue }
+            }
             do {
                 try await client.abortMultipartUpload(key: upload.key, uploadId: upload.uploadId)
                 aborted += 1

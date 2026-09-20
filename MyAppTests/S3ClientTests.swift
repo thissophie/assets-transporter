@@ -336,12 +336,14 @@ struct S3ClientTests {
         expectAllSigned(transport)
     }
 
-    // 9. listMultipartUploads
+    // 9. listMultipartUploads (Initiated parsed with and without fractional
+    // seconds; missing Initiated stays nil rather than failing the entry)
     @Test func listMultipartUploadsParsesXML() async throws {
         let xml = """
         <ListMultipartUploadsResult>
-          <Upload><Key>a.mov</Key><UploadId>u1</UploadId></Upload>
-          <Upload><Key>b.mov</Key><UploadId>u2</UploadId></Upload>
+          <Upload><Key>a.mov</Key><UploadId>u1</UploadId><Initiated>2026-01-02T03:04:05.000Z</Initiated></Upload>
+          <Upload><Key>b.mov</Key><UploadId>u2</UploadId><Initiated>2026-01-02T03:04:06Z</Initiated></Upload>
+          <Upload><Key>c.mov</Key><UploadId>u3</UploadId></Upload>
         </ListMultipartUploadsResult>
         """
         let transport = RecordingTransport(data: Data(xml.utf8))
@@ -349,9 +351,16 @@ struct S3ClientTests {
 
         let uploads = try await client.listMultipartUploads(prefix: "a")
 
-        #expect(uploads.count == 2)
-        #expect(uploads[0] == (key: "a.mov", uploadId: "u1"))
-        #expect(uploads[1] == (key: "b.mov", uploadId: "u2"))
+        #expect(uploads.count == 3)
+        #expect(uploads[0].key == "a.mov")
+        #expect(uploads[0].uploadId == "u1")
+        #expect(uploads[0].initiated == ISO8601DateFormatter().date(from: "2026-01-02T03:04:05Z"))
+        #expect(uploads[1].key == "b.mov")
+        #expect(uploads[1].uploadId == "u2")
+        #expect(uploads[1].initiated == ISO8601DateFormatter().date(from: "2026-01-02T03:04:06Z"))
+        #expect(uploads[2].key == "c.mov")
+        #expect(uploads[2].uploadId == "u3")
+        #expect(uploads[2].initiated == nil)
         let url = transport.requests[0].request.url?.absoluteString ?? ""
         #expect(url.contains("uploads"))
         #expect(url.contains("prefix=a"))
@@ -384,7 +393,8 @@ struct S3ClientTests {
         let uploads = try await client.listMultipartUploads(prefix: "")
 
         #expect(uploads.count == 3)
-        #expect(uploads[2] == (key: "c.mov", uploadId: "u3"))
+        #expect(uploads[2].key == "c.mov")
+        #expect(uploads[2].uploadId == "u3")
         let requests = transport.requests
         #expect(requests.count == 2)
         let secondURL = requests[1].request.url?.absoluteString ?? ""

@@ -24,9 +24,10 @@ import Observation
     /// Set when loading saved settings from the Keychain fails at launch.
     var configError: String?
 
-    /// Result of the most recent stale-upload sweep (best-effort maintenance
-    /// run whenever the model becomes configured), surfaced subtly in the
-    /// upload queue screen's footer. nil when there was nothing to report.
+    /// Result of the most recent maintenance pass (stale-upload sweep +
+    /// staging orphan cleanup, run whenever the model becomes configured),
+    /// surfaced subtly in the upload queue screen's footer. nil when there
+    /// was nothing to report.
     private(set) var maintenanceNote: String?
 
     private let credentials = CredentialStore()
@@ -70,28 +71,72 @@ import Observation
         self.writer = writer
         let engine = UploadEngine(client: client, store: store)
         self.engine = engine
-        sweepStaleUploads(engine: engine)
+        runMaintenance(engine: engine)
+        intake.resumePersistedJobs(app: self)
     }
 
-    /// Best-effort background sweep: aborts server-side multipart uploads no
-    /// persisted job owns (each abandoned attempt otherwise keeps billable
-    /// parts forever). Fire-and-forget — all awaits happen inside the task, so
-    /// becoming configured never blocks on the network; the outcome (including
-    /// failure) only surfaces via `maintenanceNote`.
-    private func sweepStaleUploads(engine: UploadEngine) {
+    /// Uploads must be at least this old before the sweep may abort them:
+    /// other devices upload into the same bucket, and "not in OUR store" says
+    /// nothing about THEIR in-flight uploads. 48 hours comfortably outlives
+    /// any real upload attempt.
+    private static let staleUploadAge: TimeInterval = 48 * 60 * 60
+
+    /// Best-effort background maintenance whenever the model becomes
+    /// configured: (1) abort server-side multipart uploads that are both
+    /// unowned locally AND older than `staleUploadAge` (each abandoned attempt
+    /// otherwise keeps billable parts forever), (2) delete orphaned staged
+    /// files no stored job references. Fire-and-forget — all awaits happen
+    /// inside the task, so becoming configured never blocks; the outcome
+    /// (including failure) only surfaces via `maintenanceNote`.
+    private func runMaintenance(engine: UploadEngine) {
         Task {
+            var notes: [String] = []
+            let liveJobs = await store.load()
             do {
-                let liveJobs = await store.load()
-                let aborted = try await engine.abandonStaleUploads(prefix: "", liveJobs: liveJobs)
-                // Only report when something happened; sweeping engines from a
-                // superseded configuration shouldn't clear a real note.
+                let aborted = try await engine.abandonStaleUploads(
+                    prefix: "", liveJobs: liveJobs,
+                    olderThan: Date(timeIntervalSinceNow: -Self.staleUploadAge))
+                // Only report when something happened; a quiet sweep shouldn't
+                // clear a real note from a previous configuration.
                 if aborted > 0 {
-                    maintenanceNote = "Cleaned \(aborted) stale upload\(aborted == 1 ? "" : "s")"
+                    notes.append("Cleaned \(aborted) stale upload\(aborted == 1 ? "" : "s")")
                 }
             } catch {
-                maintenanceNote = "Stale-upload cleanup didn't run — it will retry next launch."
+                notes.append("Stale-upload cleanup didn't run — it will retry next launch.")
             }
+            let removed = await Task.detached {
+                Self.removeOrphanedStagingFiles(jobs: liveJobs)
+            }.value
+            if removed > 0 {
+                notes.append("Removed \(removed) orphaned staged file\(removed == 1 ? "" : "s")")
+            }
+            if !notes.isEmpty { maintenanceNote = notes.joined(separator: " · ") }
         }
+    }
+
+    /// Deletes files under Staging/ that no stored job references. Skips
+    /// files added within the last hour — `addedToDirectoryDate` is NOT
+    /// preserved by a copy (unlike mtime), so a stage-copy racing this sweep
+    /// always looks new and is never deleted before its job record lands.
+    /// Unknown ages are treated as new (skipped). Returns the count removed.
+    private nonisolated static func removeOrphanedStagingFiles(jobs: [UploadJob]) -> Int {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(
+            at: IntakeModel.stagingDirectory,
+            includingPropertiesForKeys: [.addedToDirectoryDateKey],
+            options: [.skipsHiddenFiles])) ?? []
+        let cutoff = Date(timeIntervalSinceNow: -60 * 60)
+        let oldEnough = files.filter { url in
+            let added = (try? url.resourceValues(forKeys: [.addedToDirectoryDateKey]))?
+                .addedToDirectoryDate
+            return (added ?? Date()) < cutoff
+        }
+        var removed = 0
+        for url in IntakeModel.orphanedStagingFiles(files: oldEnough, jobs: jobs)
+        where (try? fm.removeItem(at: url)) != nil {
+            removed += 1
+        }
+        return removed
     }
 
     /// Pure stack construction from settings — no Keychain, no stored state.

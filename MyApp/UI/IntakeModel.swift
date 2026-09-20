@@ -41,7 +41,8 @@ import UIKit
     /// True while the sequential upload loop is draining `pending` — a second
     /// loop must never start or the same job could run twice concurrently.
     private var isRunning = false
-    private var runningJobID: UUID?
+    /// Read externally by the queue screen to hide Remove on the running row.
+    private(set) var runningJobID: UUID?
 
     // MARK: - Locations
 
@@ -74,6 +75,26 @@ import UIKit
         let parts = prefix.split(separator: "/", omittingEmptySubsequences: true)
         return (parts.count > 0 ? String(parts[0]) : "",
                 parts.count > 1 ? String(parts[1]) : "")
+    }
+
+    /// Persisted jobs worth re-running when the app becomes configured:
+    /// `.waiting` and `.uploading` (the engine's `run` resumes both safely —
+    /// it recovers server-side part state and restarts dead upload ids).
+    /// `.failed` stays for the user's explicit Retry; `.done` has nothing to do.
+    nonisolated static func resumableJobs(from jobs: [UploadJob]) -> [UploadJob] {
+        jobs.filter {
+            switch $0.state {
+            case .waiting, .uploading: true
+            case .failed, .done: false
+            }
+        }
+    }
+
+    /// Files under `stagingDirectory` that no stored job references — orphans
+    /// from crashed or superseded runs, safe to delete.
+    nonisolated static func orphanedStagingFiles(files: [URL], jobs: [UploadJob]) -> [URL] {
+        let referenced = Set(jobs.map { $0.sourceURL.standardizedFileURL.path })
+        return files.filter { !referenced.contains($0.standardizedFileURL.path) }
     }
 
     /// True when a retry of `jobID` may be enqueued: not currently running,
@@ -135,6 +156,32 @@ import UIKit
         }
     }
 
+    /// Re-runs persisted jobs from a previous session (`.waiting` and
+    /// `.uploading` — see `resumableJobs`). Called when the app becomes
+    /// configured; without this, jobs interrupted by a relaunch would sit in
+    /// the store forever, since `pending` is memory-only. Fire-and-forget.
+    func resumePersistedJobs(app: AppModel) {
+        Task {
+            let stored = await app.store.load()
+            for job in Self.resumableJobs(from: stored) {
+                // Skip anything this session already tracks.
+                guard runningJobID != job.id,
+                      !pending.contains(where: { $0.id == job.id }) else { continue }
+                if !active.contains(where: { $0.id == job.id }) {
+                    let isStagedCopy = job.sourceBookmark == nil
+                        && job.sourceURL.path.hasPrefix(Self.stagingDirectory.path)
+                    active.append(ActiveUpload(id: job.id,
+                                               displayName: job.sidecar.displayName,
+                                               progress: 0, state: .waiting,
+                                               clipKey: job.clipKey,
+                                               stagedURL: isStagedCopy ? job.sourceURL : nil))
+                }
+                pending.append(job)
+            }
+            await runQueue(app: app)
+        }
+    }
+
     /// Removes a job from the queue (queue screen's Remove button). Refuses
     /// the currently-running job — the sequential loop owns it, and removing
     /// it mid-flight would race the engine's own store updates. Waiting jobs
@@ -148,17 +195,17 @@ import UIKit
         pending.removeAll { $0.id == jobID }
         active.removeAll { $0.id == jobID }
         do {
-            // Delete the staged copy for jobs we staged ourselves (inside our
-            // container). Never touch bookmarked sources — those are the
-            // user's own files.
-            if let job = await app.store.load().first(where: { $0.id == jobID }),
-               job.sourceBookmark == nil,
+            let stored = await app.store.load().first { $0.id == jobID }
+            try await app.store.remove(jobID: jobID)
+            // Only after the store removal is durable: reclaim the staged
+            // copy for jobs we staged ourselves (inside our container). Never
+            // touch bookmarked sources — those are the user's own files.
+            if let job = stored, job.sourceBookmark == nil,
                job.sourceURL.path.hasPrefix(Self.stagingDirectory.path) {
                 try? FileManager.default.removeItem(at: job.sourceURL)
             }
-            try await app.store.remove(jobID: jobID)
         } catch {
-            lastError = "Could not remove the upload: \(String(describing: error))"
+            lastError = "Could not remove the upload: \(ErrorText.describe(error))"
         }
     }
 
@@ -171,7 +218,7 @@ import UIKit
             // Detached: multi-GB copies must not block the main actor.
             staged = try await Task.detached { try Self.stage(url) }.value
         } catch {
-            lastError = "Could not stage \(url.lastPathComponent): \(String(describing: error))"
+            lastError = "Could not stage \(url.lastPathComponent): \(ErrorText.describe(error))"
             return
         }
 
@@ -213,7 +260,7 @@ import UIKit
         do {
             try await app.store.update(job)
         } catch {
-            lastError = "Could not queue \(staged.originalFilename): \(String(describing: error))"
+            lastError = "Could not queue \(staged.originalFilename): \(ErrorText.describe(error))"
             try? FileManager.default.removeItem(at: staged.url)
             return
         }

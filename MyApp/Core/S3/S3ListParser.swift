@@ -14,6 +14,27 @@ nonisolated struct S3ListResult: Equatable, Sendable {
     var nextContinuationToken: String?
 }
 
+/// Shared parsing for S3 XML timestamps (`LastModified`, `Initiated`, …):
+/// the fractional-seconds ISO8601 variant first — S3 usually emits ".000Z" —
+/// then the plain form. ISO8601DateFormatter is thread-safe, so the shared
+/// statics are fine.
+nonisolated enum S3Timestamp {
+    private static let iso8601Fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let iso8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    static func parse(_ string: String) -> Date? {
+        iso8601Fractional.date(from: string) ?? iso8601.date(from: string)
+    }
+}
+
 /// Parses S3 ListObjectsV2 XML responses.
 nonisolated enum S3ListParser {
 
@@ -46,19 +67,8 @@ nonisolated enum S3ListParser {
         private var currentSize: Int64 = 0
         private var currentLastModified: Date?
 
-        private static let iso8601Fractional: ISO8601DateFormatter = {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return formatter
-        }()
-        private static let iso8601: ISO8601DateFormatter = {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime]
-            return formatter
-        }()
-
         private static func parseDate(_ string: String) -> Date? {
-            iso8601Fractional.date(from: string) ?? iso8601.date(from: string)
+            S3Timestamp.parse(string)
         }
 
         func parser(_ parser: XMLParser, didStartElement elementName: String,
