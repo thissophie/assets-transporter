@@ -110,6 +110,26 @@ struct IntakeModelTests {
         #expect(resumable.map(\.id) == [waiting.id, uploading.id])
     }
 
+    // MARK: - shouldRunDequeuedJob
+    //
+    // `runQueue` reloads each dequeued job from the store before running it;
+    // this pins the skip decision: a job removed while queued (absent) or
+    // finished by an earlier run (.done) must not run from a stale snapshot.
+
+    @Test func dequeuedJobSkippedWhenRemovedFromStore() {
+        #expect(!IntakeModel.shouldRunDequeuedJob(storedState: nil))
+    }
+
+    @Test func dequeuedJobSkippedWhenStoreSaysDone() {
+        #expect(!IntakeModel.shouldRunDequeuedJob(storedState: .done))
+    }
+
+    @Test func dequeuedJobRunsInAllOtherStoredStates() {
+        #expect(IntakeModel.shouldRunDequeuedJob(storedState: .waiting))
+        #expect(IntakeModel.shouldRunDequeuedJob(storedState: .uploading(uploadId: "u1")))
+        #expect(IntakeModel.shouldRunDequeuedJob(storedState: .failed(message: "boom")))
+    }
+
     @Test func orphanedStagingFilesExcludesJobReferencedSources() {
         let referenced = URL(fileURLWithPath: "/staging/a.mov")
         let orphan = URL(fileURLWithPath: "/staging/b.mov")

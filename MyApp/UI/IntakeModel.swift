@@ -97,6 +97,15 @@ import UIKit
         return files.filter { !referenced.contains($0.standardizedFileURL.path) }
     }
 
+    /// Whether a dequeued job may run, given its freshly-loaded store state:
+    /// absent (Removed while it sat in `pending`) or `.done` (finished by an
+    /// earlier run) means skip — running the queued snapshot instead could
+    /// resurrect a deleted job or repeat a completed one.
+    nonisolated static func shouldRunDequeuedJob(storedState: UploadJob.State?) -> Bool {
+        guard let storedState else { return false }
+        return storedState != .done
+    }
+
     /// True when a retry of `jobID` may be enqueued: not currently running,
     /// not already pending, and — when the stored state is known — not already
     /// uploaded. `retry` applies this twice: synchronously on entry (cheap
@@ -281,9 +290,20 @@ import UIKit
             runningJobID = nil
         }
         while !pending.isEmpty {
-            let job = pending.removeFirst()
-            runningJobID = job.id
-            let jobID = job.id
+            let queued = pending.removeFirst()
+            let jobID = queued.id
+            // Claim the id BEFORE the store-load suspension so remove() and
+            // retry() treat the job as running for this whole iteration.
+            runningJobID = jobID
+            // Run the STORE's copy, never the queued snapshot: while the job
+            // sat in `pending` it may have been Removed (store entry gone) or
+            // completed by an earlier loop (.done) — see shouldRunDequeuedJob.
+            let job = await app.store.load().first { $0.id == jobID }
+            guard let job, Self.shouldRunDequeuedJob(storedState: job.state) else {
+                active.removeAll { $0.id == jobID }
+                runningJobID = nil
+                continue
+            }
             if let index = active.firstIndex(where: { $0.id == jobID }) {
                 active[index].state = .uploading(uploadId: job.uploadId ?? "")
             }

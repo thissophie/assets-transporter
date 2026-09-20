@@ -33,6 +33,9 @@ struct ProjectDetailView: View {
     @State private var download: DownloadController?
     @State private var pendingIntakeURLs: [URL] = []
     @State private var showingCameraLabelPrompt = false
+    /// True while a folder drop is being copied into the temp intake dir
+    /// (macOS): shows a busy line and disables the intake controls.
+    @State private var isExpandingDrop = false
     /// Remembered for the rest of the session so multi-batch ingests from the
     /// same camera don't retype the label.
     @State private var sessionCameraLabel = ""
@@ -188,9 +191,22 @@ struct ProjectDetailView: View {
         }
     }
 
-    /// Dismissible error lines for clip loading and intake failures.
+    /// Dismissible error lines for clip loading and intake failures, plus the
+    /// folder-drop busy line.
     @ViewBuilder private var statusHeader: some View {
         VStack(spacing: 0) {
+            if isExpandingDrop {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Preparing dropped files…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
             if let loadError {
                 errorLine(loadError) { self.loadError = nil }
             }
@@ -236,7 +252,7 @@ struct ProjectDetailView: View {
             Button("Add Clips", systemImage: "plus") {
                 showingFileImporter = true
             }
-            .disabled(app.engine == nil)
+            .disabled(app.engine == nil || isExpandingDrop)
         }
         #else
         ToolbarItem {
@@ -302,7 +318,18 @@ struct ProjectDetailView: View {
 
     #if os(macOS)
     private func handleDrop(_ urls: [URL]) {
-        queueIntake(Self.expandDropped(urls))
+        guard !urls.isEmpty else { return }
+        isExpandingDrop = true
+        Task {
+            // Detached: expanding a dropped folder copies its children (a
+            // multi-GB SD card, potentially) and must not block the main
+            // actor. The dropped URLs' security scopes are redeemable off the
+            // callback from any thread — expandDropped starts/stops them
+            // itself, exactly as stage() does for picker URLs.
+            let expanded = await Task.detached { Self.expandDropped(urls) }.value
+            isExpandingDrop = false
+            queueIntake(expanded)
+        }
     }
     #endif
 
