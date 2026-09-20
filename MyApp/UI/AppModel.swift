@@ -16,8 +16,18 @@ import Observation
     /// backing file.
     let store = UploadQueueStore()
 
+    /// Single shared intake/upload coordinator. App-wide (not per project
+    /// view) so its `isRunning`/`runningJobID` guards actually serialize all
+    /// uploads, and the queue screen can retry/remove jobs safely.
+    let intake = IntakeModel()
+
     /// Set when loading saved settings from the Keychain fails at launch.
     var configError: String?
+
+    /// Result of the most recent stale-upload sweep (best-effort maintenance
+    /// run whenever the model becomes configured), surfaced subtly in the
+    /// upload queue screen's footer. nil when there was nothing to report.
+    private(set) var maintenanceNote: String?
 
     private let credentials = CredentialStore()
 
@@ -58,7 +68,30 @@ import Observation
         self.client = client
         self.reader = reader
         self.writer = writer
-        self.engine = UploadEngine(client: client, store: store)
+        let engine = UploadEngine(client: client, store: store)
+        self.engine = engine
+        sweepStaleUploads(engine: engine)
+    }
+
+    /// Best-effort background sweep: aborts server-side multipart uploads no
+    /// persisted job owns (each abandoned attempt otherwise keeps billable
+    /// parts forever). Fire-and-forget — all awaits happen inside the task, so
+    /// becoming configured never blocks on the network; the outcome (including
+    /// failure) only surfaces via `maintenanceNote`.
+    private func sweepStaleUploads(engine: UploadEngine) {
+        Task {
+            do {
+                let liveJobs = await store.load()
+                let aborted = try await engine.abandonStaleUploads(prefix: "", liveJobs: liveJobs)
+                // Only report when something happened; sweeping engines from a
+                // superseded configuration shouldn't clear a real note.
+                if aborted > 0 {
+                    maintenanceNote = "Cleaned \(aborted) stale upload\(aborted == 1 ? "" : "s")"
+                }
+            } catch {
+                maintenanceNote = "Stale-upload cleanup didn't run — it will retry next launch."
+            }
+        }
     }
 
     /// Pure stack construction from settings — no Keychain, no stored state.

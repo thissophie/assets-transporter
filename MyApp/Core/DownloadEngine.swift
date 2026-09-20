@@ -50,6 +50,11 @@ actor DownloadEngine {
     func download(items: [Item], into directory: URL,
                   projectManifest: ProjectManifest?,
                   progress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws {
+        // The cancel flag is scoped to one download run: reset it at entry so
+        // a cancel() from a previous run can't poison this one and the actor
+        // stays reusable (cancel → new download on the same engine works).
+        isCancelled.store(false, ordering: .relaxed)
+
         // Resolve expected sizes up front so totalBytes covers the whole batch.
         var sizes: [Int64] = []
         sizes.reserveCapacity(items.count)

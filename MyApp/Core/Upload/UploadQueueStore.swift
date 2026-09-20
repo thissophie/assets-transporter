@@ -34,6 +34,16 @@ actor UploadQueueStore: UploadJobStoring {
         try data.write(to: fileURL, options: .atomic)
     }
 
+    /// Removes the stored job with `id`, if present. Load-filter-save runs
+    /// inside the actor, so it can't clobber a concurrent `update` from a
+    /// running upload engine.
+    func remove(jobID: UUID) throws {
+        let jobs = load()
+        let remaining = jobs.filter { $0.id != jobID }
+        guard remaining.count != jobs.count else { return }
+        try save(remaining)
+    }
+
     /// Replaces the stored job with the same id, or appends it if unknown.
     func update(_ job: UploadJob) throws {
         var jobs = load()

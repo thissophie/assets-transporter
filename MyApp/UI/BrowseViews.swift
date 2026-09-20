@@ -13,12 +13,14 @@ struct BrowseRootView: View {
     @State private var browse = BrowseModel()
     @State private var selectedClientID: ClientRef.ID?
     @State private var selectedProjectID: ProjectRef.ID?
+    @State private var showingUploadQueue = false
 
     var body: some View {
         NavigationSplitView {
             ClientListView(browse: browse,
                            selection: $selectedClientID,
-                           showingSettings: $showingSettings)
+                           showingSettings: $showingSettings,
+                           showingUploadQueue: $showingUploadQueue)
         } content: {
             if let client = selectedClient {
                 ProjectListView(browse: browse, client: client,
@@ -43,6 +45,9 @@ struct BrowseRootView: View {
         .onChange(of: selectedClientID) {
             selectedProjectID = nil
         }
+        .sheet(isPresented: $showingUploadQueue) {
+            UploadQueueView()
+        }
     }
 
     private var selectedClient: ClientRef? {
@@ -62,11 +67,16 @@ struct ClientListView: View {
     var browse: BrowseModel
     @Binding var selection: ClientRef.ID?
     @Binding var showingSettings: Bool
+    @Binding var showingUploadQueue: Bool
 
     @State private var showingNewClient = false
     @State private var newClientName = ""
     @State private var renameTarget: ClientRef?
     @State private var renameText = ""
+    @State private var deletionPrompt: DeletionPrompt?
+    /// Row whose deletion preview is being fetched (tiny loading state).
+    @State private var previewingID: ClientRef.ID?
+    @State private var previewTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,9 +96,22 @@ struct ClientListView: View {
                 showingNewClient = true
             }
             .disabled(browse.isMutating || app.writer == nil)
+            UploadQueueButton(activeCount: app.intake.active.count) {
+                showingUploadQueue = true
+            }
             Button("Settings", systemImage: "gearshape") {
                 showingSettings = true
             }
+        }
+        .onDisappear { previewTask?.cancel() }
+        .confirmationDialog("Delete “\(deletionPrompt?.name ?? "")”?",
+                            isPresented: deletionPromptPresented,
+                            titleVisibility: .visible,
+                            presenting: deletionPrompt) { prompt in
+            Button("Delete", role: .destructive) { performDelete(prompt) }
+            Button("Cancel", role: .cancel) {}
+        } message: { prompt in
+            DeletionPromptMessage(prompt: prompt)
         }
         .alert("New Client", isPresented: $showingNewClient) {
             TextField("Client name", text: $newClientName)
@@ -123,13 +146,18 @@ struct ClientListView: View {
         } else {
             List(selection: $selection) {
                 ForEach(browse.clients) { client in
-                    BrowseRow(title: client.displayName, subtitle: nil)
+                    BrowseRow(title: client.displayName, subtitle: nil,
+                              isBusy: previewingID == client.id)
                         .tag(client.id)
                         .contextMenu {
                             Button("Rename") { beginRename(client) }
                                 .disabled(browse.isMutating)
+                            Button("Delete…", role: .destructive) { beginDelete(client) }
+                                .disabled(deletionDisabled)
                         }
                         .swipeActions(edge: .trailing) {
+                            Button("Delete…", role: .destructive) { beginDelete(client) }
+                                .disabled(deletionDisabled)
                             Button("Rename") { beginRename(client) }
                                 .disabled(browse.isMutating)
                         }
@@ -144,9 +172,53 @@ struct ClientListView: View {
                 set: { if !$0 { renameTarget = nil } })
     }
 
+    private var deletionPromptPresented: Binding<Bool> {
+        Binding(get: { deletionPrompt != nil },
+                set: { if !$0 { deletionPrompt = nil } })
+    }
+
+    private var deletionDisabled: Bool {
+        browse.isMutating || previewingID != nil || app.writer == nil
+    }
+
     private func beginRename(_ client: ClientRef) {
         renameText = client.displayName
         renameTarget = client
+    }
+
+    /// Fetches what deleting this client would remove, then raises the
+    /// confirmation dialog. The fetch is cancellable (superseded request or
+    /// view teardown) and its row shows a small spinner while it runs.
+    private func beginDelete(_ client: ClientRef) {
+        guard let writer = app.writer else { return }
+        previewTask?.cancel()
+        previewingID = client.id
+        previewTask = Task {
+            defer { if previewingID == client.id { previewingID = nil } }
+            do {
+                let preview = try await writer.deletionPreview(prefix: client.prefix)
+                guard !Task.isCancelled else { return }
+                deletionPrompt = DeletionPrompt(name: client.displayName,
+                                                prefix: client.prefix,
+                                                preview: preview)
+            } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+                browse.lastError = "Could not check what deleting would remove: \(String(describing: error))"
+            }
+        }
+    }
+
+    private func performDelete(_ prompt: DeletionPrompt) {
+        guard let writer = app.writer, let reader = app.reader else { return }
+        Task {
+            await browse.deleteClient(prefix: prompt.prefix, writer: writer, reader: reader)
+            // Deleting the selected client clears the selection — unless the
+            // delete failed and the client survived the refresh.
+            if selection == prompt.prefix,
+               !browse.clients.contains(where: { $0.id == prompt.prefix }) {
+                selection = nil
+            }
+        }
     }
 
     private func refresh() async {
@@ -167,6 +239,10 @@ struct ProjectListView: View {
     @State private var newProjectName = ""
     @State private var renameTarget: ProjectRef?
     @State private var renameText = ""
+    @State private var deletionPrompt: DeletionPrompt?
+    /// Row whose deletion preview is being fetched (tiny loading state).
+    @State private var previewingID: ProjectRef.ID?
+    @State private var previewTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -189,6 +265,16 @@ struct ProjectListView: View {
         }
         .task(id: client.prefix) {
             await refresh()
+        }
+        .onDisappear { previewTask?.cancel() }
+        .confirmationDialog("Delete “\(deletionPrompt?.name ?? "")”?",
+                            isPresented: deletionPromptPresented,
+                            titleVisibility: .visible,
+                            presenting: deletionPrompt) { prompt in
+            Button("Delete", role: .destructive) { performDelete(prompt) }
+            Button("Cancel", role: .cancel) {}
+        } message: { prompt in
+            DeletionPromptMessage(prompt: prompt)
         }
         .alert("New Project", isPresented: $showingNewProject) {
             TextField("Project name", text: $newProjectName)
@@ -233,13 +319,18 @@ struct ProjectListView: View {
                 ForEach(projects) { project in
                     BrowseRow(title: project.manifest.displayName,
                               subtitle: project.manifest.createdAt
-                                  .formatted(.dateTime.year().month().day()))
+                                  .formatted(.dateTime.year().month().day()),
+                              isBusy: previewingID == project.id)
                         .tag(project.id)
                         .contextMenu {
                             Button("Rename") { beginRename(project) }
                                 .disabled(browse.isMutating)
+                            Button("Delete…", role: .destructive) { beginDelete(project) }
+                                .disabled(deletionDisabled)
                         }
                         .swipeActions(edge: .trailing) {
+                            Button("Delete…", role: .destructive) { beginDelete(project) }
+                                .disabled(deletionDisabled)
                             Button("Rename") { beginRename(project) }
                                 .disabled(browse.isMutating)
                         }
@@ -258,9 +349,53 @@ struct ProjectListView: View {
                 set: { if !$0 { renameTarget = nil } })
     }
 
+    private var deletionPromptPresented: Binding<Bool> {
+        Binding(get: { deletionPrompt != nil },
+                set: { if !$0 { deletionPrompt = nil } })
+    }
+
+    private var deletionDisabled: Bool {
+        browse.isMutating || previewingID != nil || app.writer == nil
+    }
+
     private func beginRename(_ project: ProjectRef) {
         renameText = project.manifest.displayName
         renameTarget = project
+    }
+
+    /// Fetches what deleting this project would remove, then raises the
+    /// confirmation dialog. See `ClientListView.beginDelete` for the shape.
+    private func beginDelete(_ project: ProjectRef) {
+        guard let writer = app.writer else { return }
+        previewTask?.cancel()
+        previewingID = project.id
+        previewTask = Task {
+            defer { if previewingID == project.id { previewingID = nil } }
+            do {
+                let preview = try await writer.deletionPreview(prefix: project.prefix)
+                guard !Task.isCancelled else { return }
+                deletionPrompt = DeletionPrompt(name: project.manifest.displayName,
+                                                prefix: project.prefix,
+                                                preview: preview)
+            } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+                browse.lastError = "Could not check what deleting would remove: \(String(describing: error))"
+            }
+        }
+    }
+
+    private func performDelete(_ prompt: DeletionPrompt) {
+        guard let writer = app.writer, let reader = app.reader else { return }
+        Task {
+            await browse.deleteProject(prefix: prompt.prefix, in: client.prefix,
+                                       writer: writer, reader: reader)
+            // Deleting the selected project clears the selection — unless the
+            // delete failed and the project survived the refresh.
+            if selection == prompt.prefix,
+               !projects.contains(where: { $0.id == prompt.prefix }) {
+                selection = nil
+            }
+        }
     }
 
     private func refresh() async {
@@ -300,11 +435,55 @@ struct ProjectListView: View {
 
 // MARK: - Shared pieces
 
+/// A prefix deletion awaiting user confirmation: display name, the prefix to
+/// delete, and the fetched preview of what that would remove.
+private struct DeletionPrompt {
+    var name: String
+    var prefix: String
+    var preview: DeletionPreview
+}
+
+/// Confirmation-dialog body: raw object count (clips *and* their sidecars and
+/// the manifest — hence "files", not "clips") plus the total size.
+private struct DeletionPromptMessage: View {
+    var prompt: DeletionPrompt
+
+    var body: some View {
+        Text("This will permanently delete ^[\(prompt.preview.objectCount) file](inflect: true) (\(prompt.preview.totalBytes.formatted(.byteCount(style: .file)))). This cannot be undone.")
+    }
+}
+
+/// Toolbar entry to the upload queue, with a count badge while uploads are
+/// active (waiting/uploading/failed — anything still needing attention).
+private struct UploadQueueButton: View {
+    var activeCount: Int
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("Uploads", systemImage: "arrow.up.circle")
+                .overlay(alignment: .topTrailing) {
+                    if activeCount > 0 {
+                        Text("\(activeCount)")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.red, in: Capsule())
+                            .offset(x: 10, y: -8)
+                    }
+                }
+        }
+    }
+}
+
 /// One browse row: title, optional secondary line, and (on iOS) a trailing
 /// chevron. macOS sidebar/list rows conventionally have no chevron.
+/// `isBusy` shows a small trailing spinner (deletion-preview fetch).
 private struct BrowseRow: View {
     var title: String
     var subtitle: String?
+    var isBusy: Bool = false
 
     var body: some View {
         HStack {
@@ -316,8 +495,13 @@ private struct BrowseRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if isBusy {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+            }
             #if os(iOS)
-            Spacer()
+            if !isBusy { Spacer() }
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)

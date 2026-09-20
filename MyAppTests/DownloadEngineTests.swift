@@ -216,6 +216,33 @@ struct DownloadEngineTests {
             atPath: directory.appending(path: "project.json").path))
     }
 
+    // 7. The engine is reusable after cancel(): a fresh download() call on the
+    // same actor must not inherit the previous run's cancel flag.
+    @Test func downloadIsReusableAfterCancel() async throws {
+        let transport = makeStandardTransport()
+        let engine = DownloadEngine(client: makeClient(transport: transport), chunkSize: 4)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clip = makeClip(key: "acme/gala/clips/a.mov", name: "Alpha", size: 10)
+        let items = [DownloadEngine.Item(clip: clip, filename: "001_alpha.mov")]
+        let recorder = ProgressRecorder()
+        // Cancel as soon as the first chunk's bytes land.
+        recorder.onUpdate = { completed, _ in
+            if completed > 0 { engine.cancel() }
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await engine.download(items: items, into: directory,
+                                      projectManifest: nil) { recorder.record($0, $1) }
+        }
+
+        // Same engine, new call: resumes the partial file and completes.
+        try await engine.download(items: items, into: directory,
+                                  projectManifest: nil, progress: nil)
+        let file = try Data(contentsOf: directory.appending(path: "001_alpha.mov"))
+        #expect(file == Self.bytesA)
+    }
+
     // 6. fileSize == 0 falls back to a HEAD objectSize lookup for the total.
     @Test func zeroFileSizeFallsBackToObjectSize() async throws {
         let transport = RecordingTransport()

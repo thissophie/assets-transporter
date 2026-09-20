@@ -18,11 +18,15 @@ struct ProjectDetailView: View {
     @Environment(AppModel.self) private var app
     var project: ProjectRef
 
-    @State private var intake = IntakeModel()
+    /// The app-wide intake/upload coordinator: shared so the upload queue
+    /// screen and this view observe (and guard) the same sequential loop.
+    private var intake: IntakeModel { app.intake }
     @State private var clips: [Clip] = []
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var editingClip: Clip?
+    @State private var clipToDelete: Clip?
+    @State private var isDeletingClip = false
 
     @State private var showingFileImporter = false
     @State private var showingDownloadFolderPicker = false
@@ -132,11 +136,51 @@ struct ProjectDetailView: View {
                             .onTapGesture { editingClip = clip }
                             .contextMenu {
                                 Button("Edit") { editingClip = clip }
+                                Button("Delete", role: .destructive) { clipToDelete = clip }
+                                    .disabled(clipDeletionDisabled)
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button("Delete", role: .destructive) { clipToDelete = clip }
+                                    .disabled(clipDeletionDisabled)
                             }
                     }
                 }
             }
             .refreshable { await refresh() }
+            .confirmationDialog("Delete “\(clipToDelete?.sidecar.displayName ?? "")”?",
+                                isPresented: clipDeletePresented,
+                                titleVisibility: .visible,
+                                presenting: clipToDelete) { clip in
+                Button("Delete", role: .destructive) { deleteClip(clip) }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("This cannot be undone.")
+            }
+        }
+    }
+
+    private var clipDeletePresented: Binding<Bool> {
+        Binding(get: { clipToDelete != nil },
+                set: { if !$0 { clipToDelete = nil } })
+    }
+
+    private var clipDeletionDisabled: Bool {
+        app.writer == nil || isDeletingClip
+    }
+
+    /// Deletes the clip object (and its sidecar), then refreshes the list.
+    /// Failures land in the existing `loadError` line.
+    private func deleteClip(_ clip: Clip) {
+        guard let writer = app.writer, !isDeletingClip else { return }
+        isDeletingClip = true
+        Task {
+            do {
+                try await writer.deleteClip(clip)
+                await refresh()
+            } catch {
+                loadError = "Could not delete “\(clip.sidecar.displayName)”: \(String(describing: error))"
+            }
+            isDeletingClip = false
         }
     }
 

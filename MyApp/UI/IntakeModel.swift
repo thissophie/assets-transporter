@@ -135,6 +135,33 @@ import UIKit
         }
     }
 
+    /// Removes a job from the queue (queue screen's Remove button). Refuses
+    /// the currently-running job — the sequential loop owns it, and removing
+    /// it mid-flight would race the engine's own store updates. Waiting jobs
+    /// are pulled out of `pending` synchronously (before any suspension), so
+    /// the loop can never start a job that was just removed.
+    func remove(jobID: UUID, app: AppModel) async {
+        guard runningJobID != jobID else {
+            lastError = "That upload is running — wait for it to finish or fail first."
+            return
+        }
+        pending.removeAll { $0.id == jobID }
+        active.removeAll { $0.id == jobID }
+        do {
+            // Delete the staged copy for jobs we staged ourselves (inside our
+            // container). Never touch bookmarked sources — those are the
+            // user's own files.
+            if let job = await app.store.load().first(where: { $0.id == jobID }),
+               job.sourceBookmark == nil,
+               job.sourceURL.path.hasPrefix(Self.stagingDirectory.path) {
+                try? FileManager.default.removeItem(at: job.sourceURL)
+            }
+            try await app.store.remove(jobID: jobID)
+        } catch {
+            lastError = "Could not remove the upload: \(String(describing: error))"
+        }
+    }
+
     // MARK: - Internals
 
     private func enqueueOne(url: URL, projectPrefix: String,

@@ -98,6 +98,26 @@ import Observation
         }
     }
 
+    /// Deletes every object under the client's prefix, then refreshes the
+    /// client list. Halts on the first failure (surfaced in `lastError`), in
+    /// which case the refresh shows whatever survived.
+    func deleteClient(prefix: String, writer: BucketWriter, reader: BucketReader) async {
+        await mutate {
+            try await writer.deletePrefix(prefix)
+            await self.refreshClients(reader: reader)
+        }
+    }
+
+    /// Deletes every object under the project's prefix, then refreshes that
+    /// client's project list.
+    func deleteProject(prefix: String, in clientPrefix: String,
+                       writer: BucketWriter, reader: BucketReader) async {
+        await mutate {
+            try await writer.deletePrefix(prefix)
+            await self.refreshProjects(reader: reader, clientPrefix: clientPrefix)
+        }
+    }
+
     /// Applies the reorder locally first (optimistic), then persists
     /// sortIndex for *all* refs in their new order, then refreshes. On write
     /// failure the snapshot is restored and the error surfaced.
