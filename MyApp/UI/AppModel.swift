@@ -21,6 +21,13 @@ import Observation
     /// uploads, and the queue screen can retry/remove jobs safely.
     let intake = IntakeModel()
 
+    #if os(macOS)
+    /// Watched-folder coordinator: monitors one designated folder and queues
+    /// new videos into a pre-chosen project (re-armed in `install` once the
+    /// upload stack exists).
+    let watch = WatchManager()
+    #endif
+
     /// Set when loading saved settings from the Keychain fails at launch.
     var configError: String?
 
@@ -73,6 +80,10 @@ import Observation
         self.engine = engine
         runMaintenance(engine: engine)
         intake.resumePersistedJobs(app: self)
+        #if os(macOS)
+        // After the stack exists, so restored watches can actually upload.
+        watch.restoreIfConfigured(app: self)
+        #endif
     }
 
     /// Uploads must be at least this old before the sweep may abort them:

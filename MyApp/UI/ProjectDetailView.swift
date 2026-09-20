@@ -45,6 +45,10 @@ struct ProjectDetailView: View {
     @State private var isImportingPhotos = false
     #endif
 
+    #if os(macOS)
+    @State private var showingWatchFolderPicker = false
+    #endif
+
     var body: some View {
         platformContent
             .navigationTitle(project.manifest.displayName)
@@ -93,7 +97,24 @@ struct ProjectDetailView: View {
 
     private var content: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
+            // The folder picker for the watched-folder feature lives on the
+            // header so it doesn't collide with the other two fileImporters
+            // (which must each sit on their own view).
             statusHeader
+                .fileImporter(isPresented: $showingWatchFolderPicker,
+                              allowedContentTypes: [.folder],
+                              allowsMultipleSelection: false) { result in
+                    if case .success(let urls) = result, let folder = urls.first {
+                        app.watch.enable(folderURL: folder,
+                                         projectPrefix: project.prefix,
+                                         cameraLabel: sessionCameraLabelOrNil,
+                                         app: app)
+                    }
+                }
+            #else
+            statusHeader
+            #endif
             listOrEmpty
         }
         // Attached here (not next to the intake fileImporter in `body`) so the
@@ -213,6 +234,24 @@ struct ProjectDetailView: View {
             if let intakeError = intake.lastError {
                 errorLine(intakeError) { intake.lastError = nil }
             }
+            #if os(macOS)
+            // Watch status is shown here when it concerns THIS project, or
+            // when nothing is actively watched (enable/restore failures).
+            if let watchStatus = app.watch.status,
+               isWatchingThisProject || app.watch.activeConfig == nil {
+                HStack(spacing: 6) {
+                    Image(systemName: "eye")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text(watchStatus)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            #endif
         }
     }
 
@@ -253,6 +292,9 @@ struct ProjectDetailView: View {
                 showingFileImporter = true
             }
             .disabled(app.engine == nil || isExpandingDrop)
+        }
+        ToolbarItem {
+            watchMenu
         }
         #else
         ToolbarItem {
@@ -316,7 +358,52 @@ struct ProjectDetailView: View {
         #endif
     }
 
+    // MARK: - Watched folder (macOS)
+
     #if os(macOS)
+    private var isWatchingThisProject: Bool {
+        app.watch.activeConfig?.projectPrefix == project.prefix
+    }
+
+    /// The session camera label (kept by the intake sheet), trimmed; nil when
+    /// empty. Watch enable/move uses it WITHOUT prompting — the watch runs
+    /// unattended, so there is no good moment to ask, and the label is
+    /// whatever the user last typed for this session's manual intakes.
+    private var sessionCameraLabelOrNil: String? {
+        let label = sessionCameraLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty ? nil : label
+    }
+
+    /// Watch Folder menu: eye icon (filled while THIS project is watched).
+    /// Not watching → pick a folder; watching this project → show the folder
+    /// + Stop; watching another project → offer to move the watch here.
+    private var watchMenu: some View {
+        Menu {
+            if let config = app.watch.activeConfig {
+                if let path = app.watch.watchedFolderDisplayPath {
+                    Text(path)
+                }
+                if config.projectPrefix != project.prefix {
+                    Button("Move Watch Here") {
+                        app.watch.move(projectPrefix: project.prefix,
+                                       cameraLabel: sessionCameraLabelOrNil,
+                                       app: app)
+                    }
+                }
+                Button("Stop Watching") {
+                    app.watch.disable()
+                }
+            } else {
+                Button("Watch a Folder…") {
+                    showingWatchFolderPicker = true
+                }
+            }
+        } label: {
+            Label("Watch Folder", systemImage: isWatchingThisProject ? "eye.fill" : "eye")
+        }
+        .disabled(app.engine == nil)
+    }
+
     private func handleDrop(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         isExpandingDrop = true
