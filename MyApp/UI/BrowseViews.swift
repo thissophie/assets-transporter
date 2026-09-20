@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Client/project browsing (Task 5.2).
 ///
-/// Layout: a three-column `NavigationSplitView` (clients → projects → detail
-/// placeholder) on all platforms. On iPhone the split view automatically
+/// Layout: a three-column `NavigationSplitView` (clients → projects → project
+/// detail) on all platforms. On iPhone the split view automatically
 /// collapses into a navigation-stack presentation, so no size-class branching
 /// is needed — one hierarchy serves macOS, iPad, and iPhone.
 struct BrowseRootView: View {
@@ -29,9 +29,9 @@ struct BrowseRootView: View {
             }
         } detail: {
             if let project = selectedProject {
-                ProjectPlaceholderView(project: project)
+                ProjectDetailView(project: project)
             } else {
-                Text("Select a project — clips arrive in Task 5.3")
+                Text("Select a project")
                     .foregroundStyle(.secondary)
                     .padding()
             }
@@ -357,22 +357,6 @@ struct BrowseStatusHeader: View {
                 .padding(.vertical, 6)
             }
         }
-    }
-}
-
-/// Detail placeholder until Task 5.3 brings the clip list.
-struct ProjectPlaceholderView: View {
-    var project: ProjectRef
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Text(project.manifest.displayName)
-                .font(.title2)
-            Text("Clips arrive in Task 5.3")
-                .foregroundStyle(.secondary)
-        }
-        .padding()
-        .navigationTitle(project.manifest.displayName)
     }
 }
 
