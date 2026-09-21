@@ -58,6 +58,15 @@ nonisolated struct S3Client: Sendable {
         return data
     }
 
+    /// Presigned GET URL for `key`, valid for `expiresIn` seconds. Pure — no
+    /// network: the grant lives entirely in the URL, for consumers that cannot
+    /// send an Authorization header (streaming playback via AVPlayer).
+    func presignedGetURL(key: String, expiresIn: Int = 3600, date: Date = Date()) -> URL {
+        SigV4.presignedURL(url: config.url(forKey: key),
+                           accessKey: config.accessKey, secretKey: config.secretKey,
+                           region: config.region, expires: expiresIn, date: date)
+    }
+
     /// HEAD the object and return its size from the Content-Length header.
     func objectSize(key: String) async throws -> Int64 {
         let request = signedRequest(method: "HEAD", key: key)

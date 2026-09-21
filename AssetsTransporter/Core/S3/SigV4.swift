@@ -110,6 +110,68 @@ nonisolated enum SigV4 {
         return req
     }
 
+    // MARK: - Presigned URLs
+
+    /// Returns `url` with SigV4 query-string authentication appended
+    /// (`X-Amz-Algorithm` … `X-Amz-Signature`), valid for `expires` seconds.
+    ///
+    /// The only signed header is `host` and the payload hash is
+    /// `UNSIGNED-PAYLOAD`, so the whole grant lives in the URL — required for
+    /// consumers that cannot attach request headers (e.g. AVPlayer streaming).
+    static func presignedURL(method: String = "GET", url: URL, accessKey: String,
+                             secretKey: String, region: String, service: String = "s3",
+                             expires: Int, date: Date = Date()) -> URL {
+        let amzDate = amzDateFormatter.string(from: date)
+        let dateStamp = String(amzDate.prefix(8))
+        let credential = "\(accessKey)/\(dateStamp)/\(region)/\(service)/aws4_request"
+
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            preconditionFailure("presignedURL requires a decomposable URL: \(url)")
+        }
+        var items = components.queryItems ?? []
+        items.append(contentsOf: [
+            URLQueryItem(name: "X-Amz-Algorithm", value: "AWS4-HMAC-SHA256"),
+            URLQueryItem(name: "X-Amz-Credential", value: credential),
+            URLQueryItem(name: "X-Amz-Date", value: amzDate),
+            URLQueryItem(name: "X-Amz-Expires", value: String(expires)),
+            URLQueryItem(name: "X-Amz-SignedHeaders", value: "host"),
+        ])
+        components.queryItems = items
+        let canonicalQuery = canonicalQueryString(from: components)
+
+        var canonicalURI = components.percentEncodedPath
+        if canonicalURI.isEmpty { canonicalURI = "/" }
+
+        var hostValue = components.host ?? ""
+        if let port = components.port {
+            let isDefault = (components.scheme?.lowercased() == "https" && port == 443)
+                || (components.scheme?.lowercased() == "http" && port == 80)
+            if !isDefault { hostValue += ":\(port)" }
+        }
+
+        let canonical = [
+            method,
+            canonicalURI,
+            canonicalQuery,
+            "host:\(hostValue)\n",
+            "host",
+            "UNSIGNED-PAYLOAD",
+        ].joined(separator: "\n")
+
+        let sts = stringToSign(canonicalRequest: canonical, amzDate: amzDate, dateStamp: dateStamp,
+                               region: region, service: service)
+        let key = signingKey(secret: secretKey, date: dateStamp, region: region, service: service)
+        let signature = hexString(hmac(key: key, data: Data(sts.utf8)))
+
+        // The final query must byte-match what was signed, so reuse the
+        // canonical string rather than re-encoding through queryItems.
+        components.percentEncodedQuery = canonicalQuery + "&X-Amz-Signature=\(signature)"
+        guard let signed = components.url else {
+            preconditionFailure("presignedURL produced an invalid URL for: \(url)")
+        }
+        return signed
+    }
+
     // MARK: - Internals
 
     /// UTC formatter producing SigV4 timestamps of the form `yyyyMMdd'T'HHmmss'Z'`.

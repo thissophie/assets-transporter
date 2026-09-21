@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -25,6 +26,7 @@ struct ProjectDetailView: View {
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var editingClip: Clip?
+    @State private var playingClip: Clip?
     @State private var clipToDelete: Clip?
     @State private var isDeletingClip = false
 
@@ -63,6 +65,12 @@ struct ProjectDetailView: View {
             }
             .sheet(item: $editingClip) { clip in
                 ClipEditSheet(clip: clip) { await refresh() }
+            }
+            .sheet(item: $playingClip) { clip in
+                // Presigning is pure (no network), so the URL is built right
+                // at presentation time and the grant clock starts here.
+                ClipPlayerSheet(clip: clip,
+                                url: session.client.presignedGetURL(key: clip.key))
             }
             .sheet(isPresented: $showingCameraLabelPrompt) {
                 cameraLabelSheet
@@ -159,18 +167,27 @@ struct ProjectDetailView: View {
                 }
                 Section {
                     ForEach(clips) { clip in
-                        ClipRow(clip: clip)
-                            .contentShape(Rectangle())
-                            .onTapGesture { editingClip = clip }
-                            .contextMenu {
-                                Button("Edit") { editingClip = clip }
-                                Button("Delete", role: .destructive) { clipToDelete = clip }
-                                    .disabled(clipDeletionDisabled)
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button("Delete", role: .destructive) { clipToDelete = clip }
-                                    .disabled(clipDeletionDisabled)
-                            }
+                        // Tap streams the clip; the ⓘ button (and the context
+                        // menu) opens the edit sheet.
+                        HStack(spacing: 8) {
+                            ClipRow(clip: clip)
+                            Spacer()
+                            Button("Edit", systemImage: "info.circle") { editingClip = clip }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { playingClip = clip }
+                        .contextMenu {
+                            Button("Edit") { editingClip = clip }
+                            Button("Delete", role: .destructive) { clipToDelete = clip }
+                                .disabled(clipDeletionDisabled)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button("Delete", role: .destructive) { clipToDelete = clip }
+                                .disabled(clipDeletionDisabled)
+                        }
                     }
                 }
             }
@@ -802,6 +819,43 @@ private struct ClipThumbnail: View {
             generator.maximumSize = CGSize(width: 240, height: 240)
             thumbnail = try? await generator.image(at: .zero).image
         }
+    }
+}
+
+// MARK: - Player sheet
+
+/// Streams one clip through AVPlayer from a short-lived presigned URL. The
+/// URL carries the whole grant (AVPlayer cannot attach Authorization headers
+/// to its media requests), and AVPlayer's own ranged GETs make scrubbing work
+/// without downloading the clip. Unplayable formats and network failures
+/// surface as the player's built-in error state.
+private struct ClipPlayerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    var clip: Clip
+    var url: URL
+
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        NavigationStack {
+            VideoPlayer(player: player)
+                .navigationTitle(clip.sidecar.displayName)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+        .onAppear {
+            let player = AVPlayer(url: url)
+            self.player = player
+            player.play()
+        }
+        .onDisappear { player?.pause() }
+        #if os(macOS)
+        .frame(minWidth: 640, minHeight: 420)
+        #endif
+        .presentationDetents([.large])
     }
 }
 

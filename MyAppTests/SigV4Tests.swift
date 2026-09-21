@@ -58,6 +58,40 @@ struct SigV4Tests {
         #expect(signed.value(forHTTPHeaderField: "x-amz-date") == "20260910T002640Z")
     }
 
+    // Vector from AWS docs "Authenticating Requests: Using Query Parameters
+    // (AWS Signature Version 4)". If this fails, trust the docs over this file.
+    @Test func presignedURLMatchesAWSVector() {
+        let url = SigV4.presignedURL(
+            url: URL(string: "https://examplebucket.s3.amazonaws.com/test.txt")!,
+            accessKey: "AKIAIOSFODNN7EXAMPLE",
+            secretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            region: "us-east-1", expires: 86400,
+            date: Date(timeIntervalSince1970: 1_369_353_600)) // 20130524T000000Z
+        #expect(url.absoluteString == "https://examplebucket.s3.amazonaws.com/test.txt"
+            + "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            + "&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request"
+            + "&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host"
+            + "&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404")
+    }
+
+    /// A non-default port is part of the signed host, so changing it must
+    /// change the signature (and re-signing the same URL must not).
+    @Test func presignedURLSignsNonDefaultPort() throws {
+        let date = Date(timeIntervalSince1970: 1_789_000_000)
+        func signature(port: Int) throws -> String {
+            let url = SigV4.presignedURL(url: URL(string: "http://localhost:\(port)/it-video/x.mov")!,
+                                         accessKey: "AK", secretKey: "SK",
+                                         region: "us-east-1", expires: 3600, date: date)
+            return try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "X-Amz-Signature" }?.value)
+        }
+        let sig = try signature(port: 4566)
+        #expect(sig.count == 64)
+        #expect(sig.allSatisfy { "0123456789abcdef".contains($0) })
+        #expect(try signature(port: 4566) == sig)
+        #expect(try signature(port: 9000) != sig)
+    }
+
     @Test func signingIsDeterministic() {
         var req = URLRequest(url: URL(string: "https://s3.example.com/b/k.mov")!)
         req.httpMethod = "GET"

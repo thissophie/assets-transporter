@@ -96,6 +96,26 @@ struct S3ClientTests {
         }
     }
 
+    // 0. presignedGetURL — pure, no transport traffic
+    @Test func presignedGetURLCarriesQueryGrant() throws {
+        let transport = RecordingTransport()
+        let client = makeClient(transport: transport)
+
+        let url = client.presignedGetURL(key: "movies/a.mov",
+                                         date: Date(timeIntervalSince1970: 1_789_000_000))
+
+        #expect(url.path == "/video/movies/a.mov") // path-style: bucket in path
+        let items = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        func value(_ name: String) -> String? { items.first { $0.name == name }?.value }
+        #expect(value("X-Amz-Algorithm") == "AWS4-HMAC-SHA256")
+        #expect(value("X-Amz-Credential") == "AK/20260910/us-east-1/s3/aws4_request")
+        #expect(value("X-Amz-Date") == "20260910T002640Z")
+        #expect(value("X-Amz-Expires") == "3600")
+        #expect(value("X-Amz-SignedHeaders") == "host")
+        #expect(value("X-Amz-Signature")?.count == 64)
+        #expect(transport.requests.isEmpty)
+    }
+
     // 1. putObject(data)
     @Test func putObjectDataSendsSignedPut() async throws {
         let transport = RecordingTransport()
