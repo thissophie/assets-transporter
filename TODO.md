@@ -44,10 +44,9 @@ be felt in real use.
 
 ## Features deferred from the plan
 
-- [ ] **Per-clip download selection.** Downloads are whole-project only
-  (deliberate deferral, noted in `UI/ProjectDetailView.swift`). Add row
-  selection + a "Download Selected…" action reusing the same
-  `DownloadEngine`/`DownloadNaming` path.
+- [x] **Per-clip download selection.** Done 2026-09-22: row multi-select with
+  download/delete of just the selected clips
+  (`docs/plans/2026-09-22-clip-multi-select-design.md`).
 - [ ] **Remote clip thumbnails.** Remote clips show a static video icon; only
   in-flight uploads get real frames (from their local staged file). Real
   thumbnails need ranged GETs of the moov atom or server-side stills — or

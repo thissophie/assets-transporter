@@ -37,4 +37,16 @@ nonisolated enum DownloadNaming {
             return "\(index)_\(candidate)"
         }
     }
+
+    /// Items for a partial download. Filenames are computed over the FULL
+    /// ordered list and then filtered to `selectedKeys`, so a selected clip
+    /// keeps the exact name (index prefix and dedup suffix) it would get from
+    /// a whole-project download — selecting clips #3 and #7 yields `003_…`
+    /// and `007_…`.
+    static func selectedFilenames(forOrdered clips: [Clip],
+                                  selectedKeys: Set<String>) -> [(clip: Clip, filename: String)] {
+        zip(clips, filenames(forOrdered: clips))
+            .filter { selectedKeys.contains($0.0.key) }
+            .map { (clip: $0.0, filename: $0.1) }
+    }
 }

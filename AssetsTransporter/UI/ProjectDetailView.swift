@@ -23,12 +23,17 @@ struct ProjectDetailView: View {
     /// screen and this view observe (and guard) the same sequential loop.
     private var intake: IntakeModel { session.intake }
     @State private var clips: [Clip] = []
+    @State private var selection = Set<Clip.ID>()
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var editingClip: Clip?
     @State private var playingClip: Clip?
-    @State private var clipToDelete: Clip?
+    @State private var clipsToDelete: [Clip]?
     @State private var isDeletingClip = false
+    /// Keys queued for the download folder picker: a set downloads just those
+    /// clips; nil downloads the whole project (and writes the project.json
+    /// copy). Always set right before the picker is presented.
+    @State private var pendingDownloadKeys: Set<String>?
 
     @State private var showingFileImporter = false
     @State private var showingDownloadFolderPicker = false
@@ -59,6 +64,7 @@ struct ProjectDetailView: View {
                 // Clear the previous project's rows/error immediately so a
                 // slow refresh doesn't flash stale content after switching.
                 clips = []
+                selection = []
                 loadError = nil
                 intake.onClipsChanged = { Task { await refresh() } }
                 await refresh()
@@ -133,6 +139,7 @@ struct ProjectDetailView: View {
             if case .success(let urls) = result, let directory = urls.first {
                 startDownload(into: directory)
             }
+            pendingDownloadKeys = nil
         }
     }
 
@@ -155,20 +162,22 @@ struct ProjectDetailView: View {
                 #endif
             }
         } else {
-            List {
+            List(selection: $selection) {
                 if !activeUploads.isEmpty {
                     Section("Uploading") {
                         ForEach(activeUploads) { upload in
                             ActiveUploadRow(upload: upload) {
                                 intake.retry(jobID: upload.id, session: session)
                             }
+                            .selectionDisabled()
                         }
                     }
                 }
                 Section {
                     ForEach(clips) { clip in
-                        // Tap streams the clip; the ⓘ button (and the context
-                        // menu) opens the edit sheet.
+                        // Click/tap selects; playback runs through the list's
+                        // primaryAction (double-click on macOS, tap on iOS).
+                        // The ⓘ button opens the edit sheet.
                         HStack(spacing: 8) {
                             ClipRow(clip: clip)
                             Spacer()
@@ -177,26 +186,36 @@ struct ProjectDetailView: View {
                                 .buttonStyle(.borderless)
                                 .foregroundStyle(.secondary)
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture { playingClip = clip }
-                        .contextMenu {
-                            Button("Edit") { editingClip = clip }
-                            Button("Delete", role: .destructive) { clipToDelete = clip }
-                                .disabled(clipDeletionDisabled)
-                        }
                         .swipeActions(edge: .trailing) {
-                            Button("Delete", role: .destructive) { clipToDelete = clip }
+                            Button("Delete", role: .destructive) { clipsToDelete = [clip] }
                                 .disabled(clipDeletionDisabled)
                         }
                     }
                 }
             }
+            .contextMenu(forSelectionType: Clip.ID.self) { ids in
+                selectionMenu(for: selectedClips(ids))
+            } primaryAction: { ids in
+                // Playback is single-clip only; a multi-selection double-click
+                // (or tap) does nothing.
+                if ids.count == 1, let clip = clips.first(where: { ids.contains($0.id) }) {
+                    playingClip = clip
+                }
+            }
+            #if os(macOS)
+            .onDeleteCommand {
+                let selected = selectedClips(selection)
+                if !selected.isEmpty && !clipDeletionDisabled {
+                    clipsToDelete = selected
+                }
+            }
+            #endif
             .refreshable { await refresh() }
-            .confirmationDialog("Delete “\(clipToDelete?.sidecar.displayName ?? "")”?",
+            .confirmationDialog(deleteConfirmationTitle,
                                 isPresented: clipDeletePresented,
                                 titleVisibility: .visible,
-                                presenting: clipToDelete) { clip in
-                Button("Delete", role: .destructive) { deleteClip(clip) }
+                                presenting: clipsToDelete) { toDelete in
+                Button("Delete", role: .destructive) { deleteClips(toDelete) }
                 Button("Cancel", role: .cancel) {}
             } message: { _ in
                 Text("This cannot be undone.")
@@ -205,27 +224,65 @@ struct ProjectDetailView: View {
     }
 
     private var clipDeletePresented: Binding<Bool> {
-        Binding(get: { clipToDelete != nil },
-                set: { if !$0 { clipToDelete = nil } })
+        Binding(get: { clipsToDelete != nil },
+                set: { if !$0 { clipsToDelete = nil } })
     }
 
     private var clipDeletionDisabled: Bool {
         isDeletingClip
     }
 
-    /// Deletes the clip object (and its sidecar), then refreshes the list.
+    /// The given selection resolved to clips, in list order.
+    private func selectedClips(_ ids: Set<Clip.ID>) -> [Clip] {
+        clips.filter { ids.contains($0.id) }
+    }
+
+    private var deleteConfirmationTitle: String {
+        guard let clipsToDelete else { return "" }
+        return clipsToDelete.count == 1
+            ? "Delete “\(clipsToDelete[0].sidecar.displayName)”?"
+            : "Delete \(clipsToDelete.count) clips?"
+    }
+
+    /// Context menu for the right-clicked (or long-pressed) rows: single-clip
+    /// actions when one row is targeted, bulk download/delete otherwise.
+    @ViewBuilder private func selectionMenu(for selected: [Clip]) -> some View {
+        if selected.count == 1, let clip = selected.first {
+            Button("Play") { playingClip = clip }
+            Button("Edit") { editingClip = clip }
+        }
+        if !selected.isEmpty {
+            Button(selected.count == 1 ? "Download…" : "Download \(selected.count) Clips…") {
+                pendingDownloadKeys = Set(selected.map(\.key))
+                showingDownloadFolderPicker = true
+            }
+            .disabled(download != nil)
+            Button(selected.count == 1 ? "Delete" : "Delete \(selected.count) Clips",
+                   role: .destructive) {
+                clipsToDelete = selected
+            }
+            .disabled(clipDeletionDisabled)
+        }
+    }
+
+    /// Deletes the clips (objects + sidecars) sequentially, halting on the
+    /// first failure, then refreshes either way so partial progress shows.
     /// Failures land in the existing `loadError` line.
-    private func deleteClip(_ clip: Clip) {
-        guard !isDeletingClip else { return }
+    private func deleteClips(_ toDelete: [Clip]) {
+        guard !isDeletingClip, !toDelete.isEmpty else { return }
         let writer = session.writer
         isDeletingClip = true
         Task {
             do {
-                try await writer.deleteClip(clip)
-                await refresh()
+                try await writer.deleteClips(toDelete)
+                selection.subtract(toDelete.map(\.id))
             } catch {
-                loadError = "Could not delete “\(clip.sidecar.displayName)”: \(ErrorText.describe(error))"
+                let what = toDelete.count == 1
+                    ? "“\(toDelete[0].sidecar.displayName)”"
+                    : "\(toDelete.count) clips"
+                loadError = "Could not delete \(what): \(ErrorText.describe(error))"
             }
+            await refresh()
             isDeletingClip = false
         }
     }
@@ -291,12 +348,22 @@ struct ProjectDetailView: View {
     // MARK: - Toolbar
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        // Whole-project download (per-clip selection deferred).
+        // Downloads the selection when one exists, the whole project otherwise.
         ToolbarItem {
-            Button("Download…", systemImage: "arrow.down.circle") {
+            Button(selection.isEmpty ? "Download…" : "Download Selected…",
+                   systemImage: "arrow.down.circle") {
+                pendingDownloadKeys = selection.isEmpty ? nil : selection
                 showingDownloadFolderPicker = true
             }
             .disabled(clips.isEmpty || download != nil)
+        }
+        if !selection.isEmpty {
+            ToolbarItem {
+                Button("Delete Selected", systemImage: "trash") {
+                    clipsToDelete = selectedClips(selection)
+                }
+                .disabled(clipDeletionDisabled)
+            }
         }
         #if os(macOS)
         ToolbarItem {
@@ -326,6 +393,10 @@ struct ProjectDetailView: View {
             Button("Files", systemImage: "folder.badge.plus") {
                 showingFileImporter = true
             }
+        }
+        // Edit mode provides the standard multi-select checkmarks on iOS.
+        ToolbarItem {
+            EditButton()
         }
         #endif
     }
@@ -508,13 +579,26 @@ struct ProjectDetailView: View {
 
     // MARK: - Download
 
-    /// Downloads the whole project into the picked directory, using the SAME
-    /// ordering the list shows: `clips` is already sorted by `listClips`, and
-    /// `DownloadNaming` prefixes filenames from that order.
+    /// Downloads the pending selection — or the whole project when none — into
+    /// the picked directory. Filenames always come from the FULL list order
+    /// (`DownloadNaming`), so a partial download keeps each clip's project
+    /// position; only whole-project downloads write the project.json copy.
     private func startDownload(into directory: URL) {
-        guard !clips.isEmpty else { return }
+        let items: [DownloadEngine.Item]
+        let manifest: ProjectManifest?
+        if let pendingDownloadKeys {
+            items = DownloadNaming.selectedFilenames(forOrdered: clips,
+                                                     selectedKeys: pendingDownloadKeys)
+                .map { DownloadEngine.Item(clip: $0.clip, filename: $0.filename) }
+            manifest = nil
+        } else {
+            let filenames = DownloadNaming.filenames(forOrdered: clips)
+            items = zip(clips, filenames).map { DownloadEngine.Item(clip: $0, filename: $1) }
+            manifest = project.manifest
+        }
+        guard !items.isEmpty else { return }
         let controller = DownloadController(client: session.client)
-        controller.start(clips: clips, manifest: project.manifest, directory: directory)
+        controller.start(items: items, manifest: manifest, directory: directory)
         download = controller
     }
 
@@ -524,6 +608,8 @@ struct ProjectDetailView: View {
         defer { isLoading = false }
         do {
             clips = try await reader.listClips(projectPrefix: project.prefix)
+            // Drop selected ids that no longer exist (deleted here or elsewhere).
+            selection.formIntersection(Set(clips.map(\.id)))
             loadError = nil
         } catch {
             // A refresh cancelled by view teardown / project switch is not a failure.
@@ -565,13 +651,12 @@ private final class DownloadController: Identifiable {
         engine = DownloadEngine(client: client)
     }
 
-    /// `clips` must already be in list order; filenames come from
-    /// `DownloadNaming` so downloads carry the same order prefixes.
-    func start(clips: [Clip], manifest: ProjectManifest, directory: URL) {
+    /// `items` must already be in list order with `DownloadNaming` filenames
+    /// (so downloads carry the order prefixes). `manifest` is written
+    /// alongside the clips only for whole-project downloads.
+    func start(items: [DownloadEngine.Item], manifest: ProjectManifest?, directory: URL) {
         guard task == nil else { return }
-        clipCount = clips.count
-        let filenames = DownloadNaming.filenames(forOrdered: clips)
-        let items = zip(clips, filenames).map { DownloadEngine.Item(clip: $0, filename: $1) }
+        clipCount = items.count
         let engine = engine
         task = Task {
             // Security-scoped access is the caller's job: hold it across the

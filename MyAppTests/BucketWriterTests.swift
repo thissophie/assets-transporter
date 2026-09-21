@@ -326,6 +326,45 @@ struct BucketWriterTests {
         #expect(transport.requests.count == 1)
     }
 
+    // 10b. deleteClips deletes each clip (file then sidecar) in order.
+    @Test func deleteClipsDeletesEachClipInOrder() async throws {
+        let keys = [
+            Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov",
+            Self.projectPrefix + "clips/2026-03-01_130000_camb_def2.mov",
+        ]
+        let transport = RecordingTransport(responses: [])
+        let writer = makeWriter(transport: transport)
+
+        try await writer.deleteClips(keys.map(makeClip))
+
+        let requests = transport.requests
+        #expect(requests.count == 4)
+        #expect(requests.allSatisfy { $0.request.httpMethod == "DELETE" })
+        #expect(requests.map(\.request.url?.path) == [
+            "/video/\(keys[0])",
+            "/video/\(keys[0]).json",
+            "/video/\(keys[1])",
+            "/video/\(keys[1]).json",
+        ])
+    }
+
+    // 10c. deleteClips halts on the first failing clip: the error propagates
+    //      and later clips are never attempted.
+    @Test func deleteClipsHaltsOnFirstFailure() async throws {
+        let keys = [
+            Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov",
+            Self.projectPrefix + "clips/2026-03-01_130000_camb_def2.mov",
+        ]
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "abc1.mov", with: (Data("boom".utf8), 500))
+        let writer = makeWriter(transport: transport)
+
+        await #expect(throws: S3Error.http(status: 500, body: "boom")) {
+            try await writer.deleteClips(keys.map(makeClip))
+        }
+        #expect(transport.requests.count == 1)   // first file delete only
+    }
+
     // 11. Non-404 errors on the sidecar delete propagate.
     @Test func deleteClipPropagatesNon404SidecarError() async throws {
         let clipKey = Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov"

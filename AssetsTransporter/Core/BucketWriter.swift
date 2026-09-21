@@ -81,6 +81,15 @@ nonisolated struct BucketWriter: Sendable {
         }
     }
 
+    /// Deletes each clip in order via `deleteClip`, halting on the first
+    /// failure (matching `deletePrefix` semantics) — clips deleted before the
+    /// failure stay deleted.
+    func deleteClips(_ clips: [Clip]) async throws {
+        for clip in clips {
+            try await deleteClip(clip)
+        }
+    }
+
     /// Deletes every object under `prefix`, sequentially, halting on the first
     /// failure. Used for both projects and clients. The prefix is normalized to
     /// end in "/" so it can never match a sibling folder's keys.

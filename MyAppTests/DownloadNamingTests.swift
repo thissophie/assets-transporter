@@ -32,4 +32,26 @@ struct DownloadNamingTests {
         let names = DownloadNaming.filenames(forOrdered: clips)
         #expect(names == ["001_cam-a_intro.mov", "002_cam-a_intro-2.mov"])
     }
+
+    // Subset filenames keep their FULL-project positions and dedup suffixes,
+    // so a partial download slots alongside a whole-project download.
+    @Test func selectedFilenamesKeepFullProjectPositions() {
+        let clips = [
+            clip(key: "c/p/clips/2026-09-19_183042_cam-a_e51f.mov", displayName: "Intro", cameraLabel: "Cam A"),
+            clip(key: "c/p/clips/2026-09-19_183042_cam-a_f62a.mov", displayName: "Intro", cameraLabel: "Cam A"),
+            clip(key: "c/p/clips/2026-09-19_190000_cam_a1b2.mp4", displayName: "Main Talk", cameraLabel: nil),
+        ]
+        let picked = DownloadNaming.selectedFilenames(forOrdered: clips,
+                                                      selectedKeys: [clips[1].key, clips[2].key])
+        #expect(picked.map(\.filename) == ["002_cam-a_intro-2.mov", "003_main-talk.mp4"])
+        #expect(picked.map(\.clip.key) == [clips[1].key, clips[2].key])
+    }
+
+    @Test func selectedFilenamesWithUnknownKeysIsEmpty() {
+        let clips = [
+            clip(key: "c/p/clips/2026-09-19_183042_cam-a_e51f.mov", displayName: "Intro", cameraLabel: "Cam A"),
+        ]
+        #expect(DownloadNaming.selectedFilenames(forOrdered: clips,
+                                                 selectedKeys: ["c/p/clips/other.mov"]).isEmpty)
+    }
 }
