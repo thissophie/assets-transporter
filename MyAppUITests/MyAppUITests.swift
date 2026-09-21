@@ -222,6 +222,124 @@ final class MyAppUITests: XCTestCase {
         app.typeText(text)
     }
 
+    // MARK: - Focused: project selection + reorder
+
+    /// displayName → sortIndex for every project manifest in the bucket
+    /// (missing sortIndex → Int.max).
+    func projectSortIndexes() -> [String: Int] {
+        var result: [String: Int] = [:]
+        for key in bucketKeys() where key.hasSuffix("/project.json") {
+            let json = sidecarJSON(forKey: key)
+            if let name = json["displayName"] as? String {
+                result[name] = json["sortIndex"] as? Int ?? Int.max
+            }
+        }
+        return result
+    }
+
+    /// Regression test: with the modern reorderable()/reorderContainer
+    /// modifiers on the projects List, macOS row selection was completely
+    /// blocked (single click, double click, keyboard). After the fallback to
+    /// ForEach.onMove, a single plain click must select a project row AND
+    /// drag-to-reorder must still work and persist sortIndex.
+    @MainActor
+    func testProjectSelectionAndReorder() throws {
+        let app = XCUIApplication(bundleIdentifier: Self.appBundleID)
+        diagApp = app
+        app.launch()
+        _ = app.windows.firstMatch.waitForExistence(timeout: 30)
+        zoomWindow(app)
+
+        // Reach the browse UI; configure against ministack on first run.
+        let endpointField = field(app, "https://s3.example.com:9000")
+        if endpointField.waitForExistence(timeout: 10) {
+            fill(endpointField, "http://localhost:4566", app: app)
+            fill(field(app, "Bucket"), "it-video", app: app)
+            fill(field(app, "Access Key"), "test", app: app)
+            fill(app.secureTextFields.firstMatch, "test", app: app)
+            app.buttons["Save"].click()
+        }
+
+        // Enter the client (single plain click — no fallbacks).
+        let acmeRow = text(app, "Acme Corp")
+        waitFor(acmeRow, "Acme Corp row")
+        acmeRow.click()
+        waitFor(text(app, "Spring Gala"), "Spring Gala project row")
+
+        // Ensure a second, clip-less project exists so the two projects have
+        // distinguishable detail content and the list can be reordered.
+        if !text(app, "Autumn Ball").waitForExistence(timeout: 3) {
+            clickToolbar(app, "New Project")
+            let projectNameField = field(app, "Project name")
+            waitFor(projectNameField, "New Project name field", timeout: 10)
+            projectNameField.click()
+            app.typeText("Autumn Ball")
+            clickFirst([app.sheets.buttons["Create"], app.dialogs.buttons["Create"],
+                        app.buttons["Create"]], what: "Create (project)")
+            waitFor(text(app, "Autumn Ball"), "Autumn Ball project row")
+        }
+
+        // (1) Selection: one plain click on a project row must drive the
+        // detail to that project's content. Autumn Ball has no clips;
+        // Spring Gala contains the E2E cam-a clip.
+        text(app, "Autumn Ball").click()
+        waitFor(text(app, "No clips yet"),
+                "empty detail after single click on Autumn Ball", timeout: 10)
+        shoot(app, "sel-01-autumn-selected")
+
+        text(app, "Spring Gala").click()
+        waitFor(staticTextBeginning(app, "cam-"),
+                "Spring Gala clip row after single click", timeout: 15)
+        shoot(app, "sel-02-spring-selected")
+
+        // (2) Reorder: drag whichever project row sits lower above the higher
+        // one; the visible order and the persisted sortIndex must both flip.
+        func rowOrder() -> (top: String, bottom: String) {
+            let spring = text(app, "Spring Gala")
+            let autumn = text(app, "Autumn Ball")
+            return spring.frame.minY < autumn.frame.minY
+                ? (top: "Spring Gala", bottom: "Autumn Ball")
+                : (top: "Autumn Ball", bottom: "Spring Gala")
+        }
+        let before = rowOrder()
+        var flipped = false
+        for _ in 0..<3 where !flipped {
+            let source = text(app, before.bottom)
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let target = text(app, before.top)
+                .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.0))
+            source.click(forDuration: 0.7, thenDragTo: target)
+            let deadline = Date().addingTimeInterval(6)
+            while Date() < deadline && !flipped {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+                flipped = rowOrder().top == before.bottom
+            }
+        }
+        shoot(app, "sel-03-after-drag")
+        XCTAssertTrue(flipped,
+                      "drag-reorder should move \(before.bottom) above \(before.top)")
+
+        // Persisted: both manifests carry sortIndex matching the new order.
+        var indexes: [String: Int] = [:]
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            indexes = projectSortIndexes()
+            if let moved = indexes[before.bottom], let other = indexes[before.top],
+               moved < other { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(1))
+        }
+        XCTAssertLessThan(indexes[before.bottom] ?? Int.max,
+                          indexes[before.top] ?? Int.max,
+                          "sortIndex persisted for new order, got \(indexes)")
+
+        // Selection still works after the reorder round-trip.
+        text(app, "Autumn Ball").click()
+        waitFor(text(app, "No clips yet"),
+                "detail follows selection after reorder", timeout: 10)
+        shoot(app, "sel-04-selection-after-reorder")
+        app.terminate()
+    }
+
     // MARK: - The E2E scenario
 
     @MainActor

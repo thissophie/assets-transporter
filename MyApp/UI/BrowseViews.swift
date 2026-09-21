@@ -335,10 +335,20 @@ struct ProjectListView: View {
                                 .disabled(browse.isMutating)
                         }
                 }
-                .reorderable()
-            }
-            .reorderContainer(for: ProjectRef.self, isEnabled: !browse.isMutating) { difference in
-                applyReorder(difference)
+                // Drag-to-reorder uses legacy `onMove`, NOT the modern
+                // `reorderable()`/`reorderContainer` API: on macOS 27 the
+                // reorder modifiers block List selection entirely (clicks,
+                // double-clicks, and keyboard selection all stop working —
+                // verified by XCUITest against the real app), even though the
+                // documentation shows them combined with `List(selection:)`.
+                // `onMove` coexists with selection on both platforms and
+                // natively provides the (IndexSet, Int) that
+                // `BrowseModel.moveProjects` consumes. On iOS it reorders via
+                // long-press drag on a row.
+                .onMove { from, to in
+                    moveRows(from: from, to: to)
+                }
+                .moveDisabled(browse.isMutating)
             }
             .refreshable { await refresh() }
         }
@@ -403,29 +413,11 @@ struct ProjectListView: View {
         await browse.refreshProjects(reader: reader, clientPrefix: client.prefix)
     }
 
-    /// Translates the reorder difference into `move(fromOffsets:toOffset:)`
-    /// coordinates (offsets in the pre-removal array) and hands it to the model.
-    private func applyReorder(
-        _ difference: ReorderDifference<ProjectRef.ID, ReorderableSingleCollectionIdentifier>
-    ) {
-        let current = projects
-        var from = IndexSet()
-        for id in difference.sources {
-            if let index = current.firstIndex(where: { $0.id == id }) {
-                from.insert(index)
-            }
-        }
-        guard !from.isEmpty else { return }
-        let to: Int
-        switch difference.destination.position {
-        case .before(let targetID):
-            to = current.firstIndex(where: { $0.id == targetID }) ?? current.count
-        case .end:
-            to = current.count
-        @unknown default:
-            return
-        }
-        guard let writer = app.writer, let reader = app.reader else { return }
+    /// Hands an `onMove` reorder to the model (optimistic local move, then
+    /// sortIndex writes, then refresh).
+    private func moveRows(from: IndexSet, to: Int) {
+        guard !browse.isMutating,
+              let writer = app.writer, let reader = app.reader else { return }
         Task {
             await browse.moveProjects(in: client.prefix, from: from, to: to,
                                       writer: writer, reader: reader)
