@@ -25,6 +25,29 @@ struct WatchManagerTests {
         #expect(decoded.cameraLabel == nil)
     }
 
+    @Test func processedIdentitiesRoundTripThroughJSONAndCapKeepsMostRecent() throws {
+        // Sub-second mtimes must survive the persistence round-trip exactly,
+        // or every launch would treat every processed file as new again.
+        let precise = FileIdentity(name: "cam-a-clip.mov", size: 1_048_576,
+                                   modifiedAt: Date(timeIntervalSince1970: 1_726_000_000.123456))
+        let plain = FileIdentity(name: "b.mov", size: 2,
+                                 modifiedAt: Date(timeIntervalSince1970: 1))
+        let data = try JSONEncoder().encode([precise, plain])
+        let decoded = try JSONDecoder().decode([FileIdentity].self, from: data)
+        #expect(decoded == [precise, plain])
+        #expect(Set(decoded).contains(precise))
+
+        // The persisted log is bounded: the cap keeps the MOST RECENT entries.
+        let many = (0..<1_200).map {
+            FileIdentity(name: "f\($0).mov", size: Int64($0), modifiedAt: .now)
+        }
+        let capped = WatchManager.capped(many, limit: 1_000)
+        #expect(capped.count == 1_000)
+        #expect(capped.first?.name == "f200.mov")
+        #expect(capped.last?.name == "f1199.mov")
+        #expect(WatchManager.capped([precise], limit: 1_000) == [precise])
+    }
+
     @Test func statusLineShowsFolderProjectAndSessionCount() {
         #expect(WatchManager.statusLine(folderName: "Downloads",
                                         projectPrefix: "acme-x1/gala-k9/",

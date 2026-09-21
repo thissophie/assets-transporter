@@ -11,10 +11,11 @@ private final class TestClock {
     func advance(_ seconds: TimeInterval) { current = current.addingTimeInterval(seconds) }
 }
 
-/// Collects the URLs the `newVideo` callback fires with.
+/// Collects the URLs and identities the `newVideo` callback fires with.
 @MainActor
 private final class FireRecorder {
     var urls: [URL] = []
+    var identities: [FileIdentity] = []
 }
 
 @MainActor
@@ -30,12 +31,24 @@ struct WatchedFolderTests {
     }
 
     private func makeFolder(dir: URL, clock: TestClock, recorder: FireRecorder,
-                            stableInterval: TimeInterval = 2.0) -> WatchedFolder {
-        let folder = WatchedFolder(url: dir, stableInterval: stableInterval) { url in
+                            stableInterval: TimeInterval = 2.0,
+                            initiallyProcessed: Set<FileIdentity> = []) -> WatchedFolder {
+        let folder = WatchedFolder(url: dir, stableInterval: stableInterval,
+                                   initiallyProcessed: initiallyProcessed) { url, identity in
             recorder.urls.append(url)
+            recorder.identities.append(identity)
         }
         folder.now = { clock.current }
         return folder
+    }
+
+    /// The on-disk identity of `file`, exactly as `WatchedFolder` computes it.
+    private func identity(of file: URL) throws -> FileIdentity {
+        let values = try file.resourceValues(forKeys: [.fileSizeKey,
+                                                       .contentModificationDateKey])
+        return FileIdentity(name: file.lastPathComponent,
+                            size: Int64(values.fileSize ?? 0),
+                            modifiedAt: values.contentModificationDate ?? .distantPast)
     }
 
     // MARK: - Tests
@@ -130,6 +143,77 @@ struct WatchedFolderTests {
         clock.advance(2.5)
         await folder.scanNow()                 // no-op after stop
         #expect(recorder.urls.isEmpty)
+    }
+
+    @Test func firedCallbackReportsOnDiskIdentity() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = TestClock()
+        let recorder = FireRecorder()
+        let folder = makeFolder(dir: dir, clock: clock, recorder: recorder)
+
+        let file = dir.appending(path: "clip.mov")
+        try Data(repeating: 7, count: 128).write(to: file)
+        await folder.scanNow()
+        clock.advance(2.5)
+        await folder.scanNow()
+
+        #expect(recorder.identities == [try identity(of: file)])
+    }
+
+    @Test func seededProcessedIdentityNeverFires() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = TestClock()
+        let recorder = FireRecorder()
+
+        // The file was processed in a "previous launch": its identity is seeded.
+        let file = dir.appending(path: "cam-a-clip.mov")
+        try Data(repeating: 7, count: 128).write(to: file)
+        let folder = makeFolder(dir: dir, clock: clock, recorder: recorder,
+                                initiallyProcessed: [try identity(of: file)])
+
+        await folder.scanNow()
+        clock.advance(2.5)
+        await folder.scanNow()
+        clock.advance(2.5)
+        await folder.scanNow()
+        #expect(recorder.urls.isEmpty)
+    }
+
+    @Test func seededNameWithDifferentSizeOrMtimeStillFires() async throws {
+        let clock = TestClock()
+        let recorder = FireRecorder()
+
+        // Same name, different size: must fire (the file changed while the
+        // app was closed).
+        let sizeDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: sizeDir) }
+        let sizeFile = sizeDir.appending(path: "clip.mov")
+        try Data(repeating: 7, count: 128).write(to: sizeFile)
+        var staleSize = try identity(of: sizeFile)
+        staleSize.size += 1
+        let sizeFolder = makeFolder(dir: sizeDir, clock: clock, recorder: recorder,
+                                    initiallyProcessed: [staleSize])
+        await sizeFolder.scanNow()
+        clock.advance(2.5)
+        await sizeFolder.scanNow()
+        #expect(recorder.urls.map(\.lastPathComponent) == ["clip.mov"])
+
+        // Same name and size, different modification time: must also fire.
+        let mtimeDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: mtimeDir) }
+        let mtimeFile = mtimeDir.appending(path: "take.mp4")
+        try Data(repeating: 1, count: 64).write(to: mtimeFile)
+        let current = try identity(of: mtimeFile)
+        let staleMtime = FileIdentity(name: current.name, size: current.size,
+                                      modifiedAt: Date(timeIntervalSince1970: 1))
+        let mtimeFolder = makeFolder(dir: mtimeDir, clock: clock, recorder: recorder,
+                                     initiallyProcessed: [staleMtime])
+        await mtimeFolder.scanNow()
+        clock.advance(2.5)
+        await mtimeFolder.scanNow()
+        #expect(recorder.urls.map(\.lastPathComponent) == ["clip.mov", "take.mp4"])
     }
 }
 

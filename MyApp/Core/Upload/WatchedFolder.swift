@@ -5,6 +5,25 @@ nonisolated enum WatchedFolderError: Error, Equatable {
     case cannotOpenDirectory(path: String, code: Int32)
 }
 
+/// Launch-stable identity of a processed file: (name, size, mtime). Paths
+/// alone are too weak — a re-pointed folder would alias them — and content
+/// hashing is overkill for this purpose. The modification time is kept as
+/// whole milliseconds so an identity survives a JSON persistence round-trip
+/// byte-exactly (a raw `Date` re-derived from the filesystem each launch
+/// could differ from a decoded one in sub-millisecond noise).
+nonisolated struct FileIdentity: Codable, Hashable, Sendable {
+    var name: String
+    var size: Int64
+    /// Modification time in whole milliseconds since 1970.
+    var modifiedAtMS: Int64
+
+    init(name: String, size: Int64, modifiedAt: Date) {
+        self.name = name
+        self.size = size
+        self.modifiedAtMS = Int64((modifiedAt.timeIntervalSince1970 * 1000).rounded())
+    }
+}
+
 /// Watches one directory (non-recursive) for new video files.
 ///
 /// A file only counts as "arrived" once its size has been observed unchanged
@@ -28,25 +47,33 @@ final class WatchedFolder {
     private let url: URL
     private let videoExtensions: Set<String>
     private let stableInterval: TimeInterval
-    private let newVideo: @MainActor (URL) -> Void
+    private let newVideo: @MainActor (URL, FileIdentity) -> Void
 
     private var source: DispatchSourceFileSystemObject?
     /// Candidates: last observed size and when that size was first seen.
     private var pending: [URL: (size: Int64, firstSeenStable: Date)] = [:]
     /// Paths already reported; never re-fired until the next `start()`.
     private var processed: Set<URL> = []
+    /// Identities already reported — seeded from a previous launch and grown
+    /// on every fire, so files that were uploaded before a relaunch are never
+    /// re-fired. Survives `start()`, unlike the path set: an unchanged file
+    /// stays processed forever, a changed one gets a fresh identity and fires.
+    private var processedIdentities: Set<FileIdentity>
     private var recheckTask: Task<Void, Never>?
     private var isStopped = false
 
     /// `newVideo` fires exactly once per new video file whose size has been
-    /// stable for `stableInterval`.
+    /// stable for `stableInterval`, with the identity that fired (so callers
+    /// can persist it and seed `initiallyProcessed` on the next launch).
     init(url: URL,
          videoExtensions: Set<String> = ["mov", "mp4", "m4v", "avi", "mxf"],
          stableInterval: TimeInterval = 2.0,
-         newVideo: @escaping @MainActor (URL) -> Void) {
+         initiallyProcessed: Set<FileIdentity> = [],
+         newVideo: @escaping @MainActor (URL, FileIdentity) -> Void) {
         self.url = url
         self.videoExtensions = Set(videoExtensions.map { $0.lowercased() })
         self.stableInterval = stableInterval
+        self.processedIdentities = initiallyProcessed
         self.newVideo = newVideo
     }
 
@@ -98,7 +125,8 @@ final class WatchedFolder {
     func scanNow() async {
         guard !isStopped else { return }
         let timestamp = now()
-        let keys: [URLResourceKey] = [.fileSizeKey, .isRegularFileKey]
+        let keys: [URLResourceKey] = [.fileSizeKey, .isRegularFileKey,
+                                      .contentModificationDateKey]
         let contents = (try? FileManager.default.contentsOfDirectory(
             at: url, includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles])) ?? []
@@ -111,13 +139,24 @@ final class WatchedFolder {
             guard let values = try? item.resourceValues(forKeys: Set(keys)),
                   values.isRegularFile == true,
                   let size = values.fileSize.map(Int64.init) else { continue }
+            let identity = FileIdentity(name: file.lastPathComponent, size: size,
+                                        modifiedAt: values.contentModificationDate ?? .distantPast)
+            if processedIdentities.contains(identity) {
+                // Already reported (possibly in a previous launch) and
+                // unchanged since: mark the path so this session skips it
+                // cheaply. Placed before `seen.insert`, so a pending
+                // candidate that settles into a known identity is pruned.
+                processed.insert(file)
+                continue
+            }
             seen.insert(file)
 
             if let record = pending[file], record.size == size {
                 if timestamp.timeIntervalSince(record.firstSeenStable) >= stableInterval {
                     pending[file] = nil
                     processed.insert(file)
-                    newVideo(file)
+                    processedIdentities.insert(identity)
+                    newVideo(file, identity)
                 }
                 // else: unchanged but not stable long enough; keep waiting.
             } else {

@@ -42,8 +42,17 @@ nonisolated struct WatchConfig: Codable, Equatable {
     @ObservationIgnored private var scopedURL: URL?
     /// Files queued since this watch started (feeds the status line).
     @ObservationIgnored private var sessionQueuedCount = 0
+    /// Identities already enqueued from the watched folder, oldest first.
+    /// Persisted (capped) so a relaunch doesn't re-upload files still sitting
+    /// in the folder; seeds `WatchedFolder.initiallyProcessed` on restore/move.
+    @ObservationIgnored private var processedLog: [FileIdentity] = []
 
     nonisolated static let defaultsKey = "watchConfig"
+    nonisolated static let processedDefaultsKey = "watchProcessed"
+    /// The persisted processed log keeps only the most recent entries — a
+    /// watch folder that has seen thousands of clips must not grow defaults
+    /// forever, and old entries are files long since removed.
+    nonisolated static let processedCap = 1_000
 
     deinit {
         // WatchedFolder's own deinit cancels its dispatch source (closing the
@@ -63,6 +72,12 @@ nonisolated struct WatchConfig: Codable, Equatable {
         return "Watching \(folderName) → \(target) (\(queuedCount) queued this session)"
     }
 
+    /// Bounds the persisted processed log: keeps the MOST RECENT `limit`
+    /// entries (the log is appended in fire order, oldest first).
+    nonisolated static func capped(_ identities: [FileIdentity], limit: Int) -> [FileIdentity] {
+        identities.count > limit ? Array(identities.suffix(limit)) : identities
+    }
+
     // MARK: - Lifecycle
 
     /// Starts watching `folderURL` (fresh from a folder picker, so its
@@ -80,7 +95,10 @@ nonisolated struct WatchConfig: Codable, Equatable {
             let config = WatchConfig(bookmark: bookmark,
                                      projectPrefix: projectPrefix,
                                      cameraLabel: cameraLabel)
-            try startWatcher(url: folderURL, holdingScope: accessing, config: config, app: app)
+            // A newly chosen folder starts with an empty processed log:
+            // whatever sits in it now is exactly what the user asked to queue.
+            try startWatcher(url: folderURL, holdingScope: accessing, config: config,
+                             seed: [], app: app)
             persist(config)
         } catch {
             if accessing { folderURL.stopAccessingSecurityScopedResource() }
@@ -93,12 +111,16 @@ nonisolated struct WatchConfig: Codable, Equatable {
     func disable() {
         stopWatching()
         UserDefaults.standard.removeObject(forKey: Self.defaultsKey)
+        UserDefaults.standard.removeObject(forKey: Self.processedDefaultsKey)
+        processedLog = []
         status = nil
     }
 
     /// Re-targets the current watch at a different project ("Move watch
-    /// here"): same folder and bookmark, new prefix + camera label. No-op
-    /// when nothing is being watched.
+    /// here"): same folder and bookmark, new prefix + camera label. The
+    /// processed log is KEPT — files already uploaded to the old project
+    /// must not silently re-upload into the new one. No-op when nothing is
+    /// being watched.
     func move(projectPrefix: String, cameraLabel: String?, app: AppModel) {
         guard var config = activeConfig else { return }
         config.projectPrefix = projectPrefix
@@ -122,8 +144,11 @@ nonisolated struct WatchConfig: Codable, Equatable {
     // MARK: - Internals
 
     /// Resolves the config's bookmark (refreshing it when stale), takes the
-    /// security scope, and starts the watcher. Failure releases the scope and
-    /// surfaces in `status`; the persisted config is left alone.
+    /// security scope, and starts the watcher seeded with the persisted
+    /// processed log — files uploaded before a relaunch never re-fire, while
+    /// files added or changed while the app was closed still do. Failure
+    /// releases the scope and surfaces in `status`; the persisted config is
+    /// left alone.
     private func startFromBookmark(_ config: WatchConfig, app: AppModel, failureVerb: String) {
         do {
             var isStale = false
@@ -140,7 +165,8 @@ nonisolated struct WatchConfig: Codable, Equatable {
                                                            relativeTo: nil)
                     persist(config)
                 }
-                try startWatcher(url: url, holdingScope: accessing, config: config, app: app)
+                try startWatcher(url: url, holdingScope: accessing, config: config,
+                                 seed: loadProcessedLog(), app: app)
             } catch {
                 if accessing { url.stopAccessingSecurityScopedResource() }
                 throw error
@@ -153,17 +179,19 @@ nonisolated struct WatchConfig: Codable, Equatable {
     /// Builds and starts the `WatchedFolder`, then publishes the new state.
     /// Mutates nothing if `start()` throws (so a failed enable/restore leaves
     /// the manager cleanly stopped).
-    private func startWatcher(url: URL, holdingScope: Bool,
-                              config: WatchConfig, app: AppModel) throws {
+    private func startWatcher(url: URL, holdingScope: Bool, config: WatchConfig,
+                              seed: [FileIdentity], app: AppModel) throws {
         let prefix = config.projectPrefix
         let label = config.cameraLabel
         let folderName = url.lastPathComponent
-        let watcher = WatchedFolder(url: url) { [weak self, weak app] fileURL in
+        let watcher = WatchedFolder(url: url,
+                                    initiallyProcessed: Set(seed)) { [weak self, weak app] fileURL, identity in
             guard let self, let app else { return }
             // Enqueue while we hold the folder's security scope; staging
             // copies the file into our container before anything else runs.
             app.intake.enqueue(fileURLs: [fileURL], projectPrefix: prefix,
                                cameraLabel: label, app: app)
+            self.recordProcessed(identity)
             self.sessionQueuedCount += 1
             self.status = Self.statusLine(folderName: folderName, projectPrefix: prefix,
                                           queuedCount: self.sessionQueuedCount)
@@ -173,6 +201,7 @@ nonisolated struct WatchConfig: Codable, Equatable {
         scopedURL = holdingScope ? url : nil
         activeConfig = config
         watchedFolderDisplayPath = url.path
+        processedLog = seed
         sessionQueuedCount = 0
         status = Self.statusLine(folderName: folderName, projectPrefix: prefix, queuedCount: 0)
     }
@@ -192,6 +221,22 @@ nonisolated struct WatchConfig: Codable, Equatable {
     private func persist(_ config: WatchConfig) {
         guard let data = try? JSONEncoder().encode(config) else { return }
         UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+    }
+
+    /// Appends a fired identity to the processed log and persists it (capped
+    /// to the most recent `processedCap` entries) so a relaunch won't
+    /// re-upload the same file.
+    private func recordProcessed(_ identity: FileIdentity) {
+        processedLog.append(identity)
+        processedLog = Self.capped(processedLog, limit: Self.processedCap)
+        guard let data = try? JSONEncoder().encode(processedLog) else { return }
+        UserDefaults.standard.set(data, forKey: Self.processedDefaultsKey)
+    }
+
+    private func loadProcessedLog() -> [FileIdentity] {
+        guard let data = UserDefaults.standard.data(forKey: Self.processedDefaultsKey),
+              let log = try? JSONDecoder().decode([FileIdentity].self, from: data) else { return [] }
+        return log
     }
 }
 #endif
