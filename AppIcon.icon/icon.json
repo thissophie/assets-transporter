@@ -1,34 +1,62 @@
 {
-  "fill" : "automatic",
+  "fill" : {
+    "solid" : "extended-gray:1.00000,1.00000"
+  },
   "groups" : [
     {
       "layers" : [
         {
           "image-name" : "05-arrow.svg",
-          "name" : "05-arrow"
-        },
-        {
-          "image-name" : "04-badge.svg",
-          "name" : "04-badge"
-        },
-        {
-          "image-name" : "03-tile.svg",
-          "name" : "03-tile"
-        },
-        {
-          "image-name" : "02-frame.svg",
-          "name" : "02-frame"
-        },
-        {
-          "glass" : false,
-          "hidden" : false,
-          "image-name" : "01-dot-grid.svg",
-          "name" : "01-dot-grid",
+          "name" : "05-arrow",
           "position" : {
             "scale" : 1,
             "translation-in-points" : [
-              0,
-              0
+              32,
+              -51
+            ]
+          }
+        },
+        {
+          "image-name" : "04-badge.svg",
+          "name" : "04-badge",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              32,
+              -51
+            ]
+          }
+        },
+        {
+          "image-name" : "03-tile.svg",
+          "name" : "03-tile",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -270,
+              112
+            ]
+          }
+        },
+        {
+          "image-name" : "03-tile.svg",
+          "name" : "03-tile",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -270,
+              112
+            ]
+          }
+        },
+        {
+          "image-name" : "02-frame.svg",
+          "name" : "02-frame",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              112,
+              70
             ]
           }
         }
