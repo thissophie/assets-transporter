@@ -34,13 +34,26 @@ struct BrowseRootView: View {
                     .foregroundStyle(.secondary)
             }
         } detail: {
-            if let project = selectedProject {
-                ProjectDetailView(project: project)
-            } else {
-                Text("Select a project")
-                    .foregroundStyle(.secondary)
-                    .padding()
+            Group {
+                if let project = selectedProject {
+                    ProjectDetailView(project: project)
+                } else {
+                    Text("Select a project")
+                        .foregroundStyle(.secondary)
+                        .padding()
+                }
             }
+            #if os(macOS)
+            // The upload queue is server-wide, not per client, so on macOS it
+            // lives in the main content area's toolbar rather than the sidebar.
+            .toolbar {
+                ToolbarItem {
+                    UploadQueueButton(activeCount: session.intake.active.count) {
+                        showingUploadQueue = true
+                    }
+                }
+            }
+            #endif
         }
         .task(id: session.profile.settings) {
             // Re-runs when the server's connection settings are edited, so
@@ -114,11 +127,13 @@ struct ClientListView: View {
                 }
                 .disabled(browse.isMutating)
             }
+            #if os(iOS)
             ToolbarItem {
                 UploadQueueButton(activeCount: session.intake.active.count) {
                     showingUploadQueue = true
                 }
             }
+            #endif
             ToolbarItem {
                 Button("Edit Server", systemImage: "gearshape") {
                     showingServerEditor = true
