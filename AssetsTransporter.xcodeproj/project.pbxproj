@@ -17,15 +17,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* MyApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* AssetsTransporter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AssetsTransporter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CD14A12E305E81E8007C523F /* MyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CD14A1AF3060ADBD007C523F /* MyAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		000000000000000000000010 /* MyApp */ = {
+		000000000000000000000010 /* AssetsTransporter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = MyApp;
+			path = AssetsTransporter;
 			sourceTree = "<group>";
 		};
 		CD14A12F305E81E8007C523F /* MyAppTests */ = {
@@ -62,7 +62,7 @@
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000010 /* MyApp */,
+				000000000000000000000010 /* AssetsTransporter */,
 				CD14A12F305E81E8007C523F /* MyAppTests */,
 				CD14A1B03060ADBD007C523F /* MyAppUITests */,
 				000000000000000000000020 /* Products */,
@@ -72,7 +72,7 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* MyApp.app */,
+				000000000000000000000120 /* AssetsTransporter.app */,
 				CD14A12E305E81E8007C523F /* MyAppTests.xctest */,
 				CD14A1AF3060ADBD007C523F /* MyAppUITests.xctest */,
 			);
@@ -82,9 +82,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* MyApp */ = {
+		000000000000000100000000 /* AssetsTransporter */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "MyApp" */;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "AssetsTransporter" */;
 			buildPhases = (
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
@@ -93,11 +93,11 @@
 			buildRules = (
 			);
 			fileSystemSynchronizedGroups = (
-				000000000000000000000010 /* MyApp */,
+				000000000000000000000010 /* AssetsTransporter */,
 			);
-			name = MyApp;
+			name = AssetsTransporter;
 			productName = MyApp;
-			productReference = 000000000000000000000120 /* MyApp.app */;
+			productReference = 000000000000000000000120 /* AssetsTransporter.app */;
 			productType = "com.apple.product-type.application";
 		};
 		CD14A12D305E81E8007C523F /* MyAppTests */ = {
@@ -161,7 +161,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "Untitled Project" */;
+			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "AssetsTransporter" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -175,7 +175,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* MyApp */,
+				000000000000000100000000 /* AssetsTransporter */,
 				CD14A12D305E81E8007C523F /* MyAppTests */,
 				CD14A1AE3060ADBD007C523F /* MyAppUITests */,
 			);
@@ -221,13 +221,13 @@
 /* Begin PBXTargetDependency section */
 		CD14A133305E81E8007C523F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 000000000000000100000000 /* MyApp */;
+			target = 000000000000000100000000 /* AssetsTransporter */;
 			targetProxy = CD14A132305E81E8007C523F /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		000000000000000011000000 /* Debug configuration for PBXProject "Untitled Project" */ = {
+		000000000000000011000000 /* Debug configuration for PBXProject "AssetsTransporter" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -297,7 +297,7 @@
 			};
 			name = Debug;
 		};
-		000000000000000012000000 /* Release configuration for PBXProject "Untitled Project" */ = {
+		000000000000000012000000 /* Release configuration for PBXProject "AssetsTransporter" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -359,10 +359,10 @@
 			};
 			name = Release;
 		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "MyApp" */ = {
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "AssetsTransporter" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = MyApp/MyApp.entitlements;
+				CODE_SIGN_ENTITLEMENTS = AssetsTransporter/AssetsTransporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WA4JA55S9R;
@@ -399,10 +399,10 @@
 			};
 			name = Debug;
 		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "MyApp" */ = {
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "AssetsTransporter" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = MyApp/MyApp.entitlements;
+				CODE_SIGN_ENTITLEMENTS = AssetsTransporter/AssetsTransporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WA4JA55S9R;
@@ -538,19 +538,19 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		000000000000000010000000 /* Build configuration list for PBXProject "Untitled Project" */ = {
+		000000000000000010000000 /* Build configuration list for PBXProject "AssetsTransporter" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000011000000 /* Debug configuration for PBXProject "Untitled Project" */,
-				000000000000000012000000 /* Release configuration for PBXProject "Untitled Project" */,
+				000000000000000011000000 /* Debug configuration for PBXProject "AssetsTransporter" */,
+				000000000000000012000000 /* Release configuration for PBXProject "AssetsTransporter" */,
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "MyApp" */ = {
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "AssetsTransporter" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "MyApp" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "MyApp" */,
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "AssetsTransporter" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "AssetsTransporter" */,
 			);
 			defaultConfigurationName = Release;
 		};
