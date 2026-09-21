@@ -10,37 +10,42 @@ rename/reorder, download, delete. It supports multiple *named servers* (S3 endpo
 credentials): on macOS it behaves like a multi-document app — a "Servers" library window plus one
 window per open server — and on iOS it swaps between the server list and the chosen server. No AWS SDK — the S3 client is hand-rolled on `URLSession`
 with SigV4 signing. Design rationale lives in `docs/plans/2026-09-19-video-transfer-app-design.md`;
-open work in `TODO.md`. The Xcode project is literally named `Untitled Project.xcodeproj`; the
-app target and module are `MyApp`.
+open work in `TODO.md`. The Xcode project is `AssetsTransporter.xcodeproj`; the app target,
+scheme and source folder are `AssetsTransporter` (renamed from `MyApp` in commit `b85a196`).
+The test targets kept their old names: `MyAppTests` (unit) and `MyAppUITests` (XCUITest), and
+the entry point is still `AssetsTransporter/MyApp.swift` with `@main struct MyApp`. The rename
+is unfinished on the test side — see the first item in `TODO.md`.
 
 ## Building and testing
 
 `xcode-select` on this machine points at Command Line Tools, so bare `xcodebuild` fails.
-Prefix every invocation with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
-(quote the project path — it contains a space). If the Xcode MCP tools (`BuildProject`,
-`RunAllTests`, `RunSomeTests`, `XcodeRefreshCodeIssuesInFile`) are available in the session,
-prefer them; they were how the project was originally built.
+Prefix every invocation with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. If the
+Xcode MCP tools (`BuildProject`, `RunAllTests`, `RunSomeTests`, `XcodeRefreshCodeIssuesInFile`)
+are available in the session, prefer them; they were how the project was originally built.
 
 ```sh
 X="DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer"
-P="Untitled Project.xcodeproj"
+P="AssetsTransporter.xcodeproj"
 
 # Build (macOS)
-env $X xcodebuild build -project "$P" -scheme MyApp -destination 'platform=macOS'
+env $X xcodebuild build -project "$P" -scheme AssetsTransporter -destination 'platform=macOS'
 
 # Build for iOS (catches #if os(iOS) paths)
-env $X xcodebuild build -project "$P" -scheme MyApp -destination 'generic/platform=iOS Simulator'
+env $X xcodebuild build -project "$P" -scheme AssetsTransporter -destination 'generic/platform=iOS Simulator'
 
-# All unit tests (Swift Testing, hosted in MyApp)
-env $X xcodebuild test -project "$P" -scheme MyApp -destination 'platform=macOS' -only-testing:MyAppTests
+# All unit tests (Swift Testing, hosted in the AssetsTransporter app).
+# CURRENTLY BROKEN after the rename: the auto-generated AssetsTransporter scheme has no test
+# action, and MyAppTests still imports/hosts `MyApp` — see TODO.md. The commands below are the
+# intended form once that is fixed.
+env $X xcodebuild test -project "$P" -scheme AssetsTransporter -destination 'platform=macOS' -only-testing:MyAppTests
 
 # One suite / one test
-env $X xcodebuild test -project "$P" -scheme MyApp -destination 'platform=macOS' -only-testing:MyAppTests/SlugTests
-env $X xcodebuild test -project "$P" -scheme MyApp -destination 'platform=macOS' -only-testing:MyAppTests/SlugTests/basicSlugging
+env $X xcodebuild test -project "$P" -scheme AssetsTransporter -destination 'platform=macOS' -only-testing:MyAppTests/SlugTests
+env $X xcodebuild test -project "$P" -scheme AssetsTransporter -destination 'platform=macOS' -only-testing:MyAppTests/SlugTests/basicSlugging
 
 # Integration suite against a local ministack (skipped unless S3_IT_ENDPOINT is set).
 # Needs an empty bucket `it-video`, path-style, any credentials.
-env $X xcodebuild test -project "$P" -scheme MyApp -destination 'platform=macOS' \
+env $X xcodebuild test -project "$P" -scheme AssetsTransporter -destination 'platform=macOS' \
   -only-testing:MyAppTests/IntegrationTests TEST_RUNNER_S3_IT_ENDPOINT=http://localhost:4566
 ```
 
@@ -48,7 +53,7 @@ Tests use Swift Testing (`import Testing`, `@Test`, `#expect`, `@testable import
 XCTest. `MyAppUITests` is XCUITest and has its own scheme. There is no linter configured.
 
 The project uses Xcode file-system-synchronized groups: any `.swift` file dropped under
-`MyApp/` or `MyAppTests/` is picked up automatically. Never hand-edit `project.pbxproj`.
+`AssetsTransporter/` or `MyAppTests/` is picked up automatically. Never hand-edit `project.pbxproj`.
 
 ## Concurrency rules (the #1 compile-error source)
 
@@ -78,7 +83,8 @@ immutable; renames touch only the sidecar. Keep this contract when adding featur
 introduce a central index or rewrite a sibling's manifest. Timestamps are ISO8601 whole-second
 (`ManifestCoding`), and `BucketWriter.createProject` truncates to seconds so it round-trips.
 
-**Layers** (`MyApp/Core` is UI-free and unit-tested; `MyApp/UI` is SwiftUI + `@Observable` models):
+**Layers** (paths below are relative to `AssetsTransporter/`; `Core/` is UI-free and unit-tested;
+`UI/` is SwiftUI + `@Observable` models):
 
 - `Core/S3/` — `S3Client` (put/get/delete/list/multipart/listParts) over an `S3Transport`
   protocol. `URLSessionTransport` for macOS, `BackgroundTransport.shared` (background
@@ -117,9 +123,10 @@ introduce a central index or rewrite a sibling's manifest. Timestamps are ISO860
 - `UI/BrowseModel`, `BrowseViews`, `ProjectDetailView`, `UploadQueueView` — all read the
   `ServerSession` from the environment; navigation is `NavigationSplitView` on macOS, stack on
   iOS; downloads are whole-project only.
-- `MyApp.swift` — macOS scenes: `Window("Servers")` (launch window; File ▸ New Server… ⌘N,
-  Window ▸ Servers ⇧⌘0) and `WindowGroup(id: "server", for: ServerProfile.ID.self)` (one window
-  per server; reopening the same id raises it). iOS: a single `WindowGroup` with `ContentView`.
+- `MyApp.swift` (the `@main` app struct; the file kept its old name) — macOS scenes:
+  `Window("Servers")` (launch window; File ▸ New Server… ⌘N, Window ▸ Servers ⇧⌘0) and
+  `WindowGroup(id: "server", for: ServerProfile.ID.self)` (one window per server; reopening the
+  same id raises it). iOS: a single `WindowGroup` with `ContentView`.
 
 **Testing seams.** `S3Transport` is the injection point: `RecordingTransport` in
 `S3ClientTests.swift` returns canned responses and captures requests; `FlakyTransport` in

@@ -6,6 +6,12 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		CD14A3E030615D70007C523F /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = CD14A3DF30615D70007C523F /* AppIcon.icon */; };
+		CD14A3E130615D70007C523F /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = CD14A3DF30615D70007C523F /* AppIcon.icon */; };
+		CD14A3E230615D70007C523F /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = CD14A3DF30615D70007C523F /* AppIcon.icon */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		CD14A132305E81E8007C523F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -20,11 +26,25 @@
 		000000000000000000000120 /* AssetsTransporter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AssetsTransporter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CD14A12E305E81E8007C523F /* MyAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CD14A1AF3060ADBD007C523F /* MyAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MyAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CD14A3DF30615D70007C523F /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		CD14A3E830616015007C523F /* Exceptions for "AssetsTransporter" folder in "AssetsTransporter" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Assets.xcassets,
+			);
+			target = 000000000000000100000000 /* AssetsTransporter */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		000000000000000000000010 /* AssetsTransporter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				CD14A3E830616015007C523F /* Exceptions for "AssetsTransporter" folder in "AssetsTransporter" target */,
+			);
 			path = AssetsTransporter;
 			sourceTree = "<group>";
 		};
@@ -62,6 +82,7 @@
 		000000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
+				CD14A3DF30615D70007C523F /* AppIcon.icon */,
 				000000000000000000000010 /* AssetsTransporter */,
 				CD14A12F305E81E8007C523F /* MyAppTests */,
 				CD14A1B03060ADBD007C523F /* MyAppUITests */,
@@ -186,16 +207,19 @@
 		000000000000000140000000 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				CD14A3E130615D70007C523F /* AppIcon.icon in Resources */,
 			);
 		};
 		CD14A12C305E81E8007C523F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				CD14A3E030615D70007C523F /* AppIcon.icon in Resources */,
 			);
 		};
 		CD14A1AD3060ADBD007C523F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
+				CD14A3E230615D70007C523F /* AppIcon.icon in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -362,6 +386,8 @@
 		000000000000000111000000 /* Debug configuration for PBXNativeTarget "AssetsTransporter" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = AssetsTransporter/AssetsTransporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -371,6 +397,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Assets Transporter";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -402,6 +429,8 @@
 		000000000000000112000000 /* Release configuration for PBXNativeTarget "AssetsTransporter" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = AssetsTransporter/AssetsTransporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -411,6 +440,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Assets Transporter";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

@@ -1,4 +1,4 @@
-# TODO — Video Transfer App
+# TODO — AssetsTransporter
 
 Everything in the original design is implemented and verified (see
 `docs/plans/2026-09-19-video-transfer-app-design.md`). This is the honest list
@@ -8,9 +8,21 @@ be felt in real use.
 
 ## Before relying on it in the field
 
+- [ ] **Finish the `MyApp` → `AssetsTransporter` rename — unit tests don't build.** Commit
+  `b85a196` renamed the project, app target, scheme and source folder, but left the rest behind:
+  `MyAppTests` still has `TEST_HOST` pointing at `MyApp.app` and `@testable import MyApp` in
+  every file (fails with "Unable to resolve module dependency: 'MyApp'"); the auto-generated
+  `AssetsTransporter` scheme has no test action, so `xcodebuild test` refuses to run; only
+  `MyAppUITests` has a shared scheme. Also still old: the test target names, the `@main` struct
+  and its file `MyApp.swift`, the `MyAppTests` bundle id (`devplaceholder.…MyApp.MyAppTests`), and
+  the app bundle id is `com.tamatekapua.AssetTransporter` (no "s"). Fix in Xcode (never by
+  hand-editing `project.pbxproj`): re-point the test host, change the imports to
+  `AssetsTransporter`, share an `AssetsTransporter` scheme with both test bundles, then update
+  the build/test commands in `CLAUDE.md`.
+
 - [ ] **Verify iPhone background uploads on a real device.** The background
   `URLSession` transport and the relaunch handler (`AppDelegate` in
-  `MyApp.swift`) are wired but only build-verified — the simulator can't
+  `AssetsTransporter/MyApp.swift`) are wired but only build-verified — the simulator can't
   exercise the OS-kills-and-relaunches path. One real-device test with a large
   upload and a force-suspend would confirm the story. Related known limitation:
   orphaned background tasks are not re-associated with jobs after relaunch;
