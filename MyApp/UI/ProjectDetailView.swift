@@ -15,12 +15,12 @@ import UniformTypeIdentifiers
 /// Every source funnels into a small camera-label sheet, then
 /// `IntakeModel.enqueue`.
 struct ProjectDetailView: View {
-    @Environment(AppModel.self) private var app
+    @Environment(ServerSession.self) private var session
     var project: ProjectRef
 
-    /// The app-wide intake/upload coordinator: shared so the upload queue
+    /// The server's intake/upload coordinator: shared so the upload queue
     /// screen and this view observe (and guard) the same sequential loop.
-    private var intake: IntakeModel { app.intake }
+    private var intake: IntakeModel { session.intake }
     @State private var clips: [Clip] = []
     @State private var isLoading = false
     @State private var loadError: String?
@@ -106,10 +106,10 @@ struct ProjectDetailView: View {
                               allowedContentTypes: [.folder],
                               allowsMultipleSelection: false) { result in
                     if case .success(let urls) = result, let folder = urls.first {
-                        app.watch.enable(folderURL: folder,
-                                         projectPrefix: project.prefix,
-                                         cameraLabel: sessionCameraLabelOrNil,
-                                         app: app)
+                        session.watch.enable(folderURL: folder,
+                                             projectPrefix: project.prefix,
+                                             cameraLabel: sessionCameraLabelOrNil,
+                                             session: session)
                     }
                 }
             #else
@@ -152,7 +152,7 @@ struct ProjectDetailView: View {
                     Section("Uploading") {
                         ForEach(activeUploads) { upload in
                             ActiveUploadRow(upload: upload) {
-                                intake.retry(jobID: upload.id, app: app)
+                                intake.retry(jobID: upload.id, session: session)
                             }
                         }
                     }
@@ -193,13 +193,14 @@ struct ProjectDetailView: View {
     }
 
     private var clipDeletionDisabled: Bool {
-        app.writer == nil || isDeletingClip
+        isDeletingClip
     }
 
     /// Deletes the clip object (and its sidecar), then refreshes the list.
     /// Failures land in the existing `loadError` line.
     private func deleteClip(_ clip: Clip) {
-        guard let writer = app.writer, !isDeletingClip else { return }
+        guard !isDeletingClip else { return }
+        let writer = session.writer
         isDeletingClip = true
         Task {
             do {
@@ -237,8 +238,8 @@ struct ProjectDetailView: View {
             #if os(macOS)
             // Watch status is shown here when it concerns THIS project, or
             // when nothing is actively watched (enable/restore failures).
-            if let watchStatus = app.watch.status,
-               isWatchingThisProject || app.watch.activeConfig == nil {
+            if let watchStatus = session.watch.status,
+               isWatchingThisProject || session.watch.activeConfig == nil {
                 HStack(spacing: 6) {
                     Image(systemName: "eye")
                         .font(.footnote)
@@ -278,7 +279,7 @@ struct ProjectDetailView: View {
             Button("Download…", systemImage: "arrow.down.circle") {
                 showingDownloadFolderPicker = true
             }
-            .disabled(app.client == nil || clips.isEmpty || download != nil)
+            .disabled(clips.isEmpty || download != nil)
         }
         #if os(macOS)
         ToolbarItem {
@@ -291,7 +292,7 @@ struct ProjectDetailView: View {
             Button("Add Clips", systemImage: "plus") {
                 showingFileImporter = true
             }
-            .disabled(app.engine == nil || isExpandingDrop)
+            .disabled(isExpandingDrop)
         }
         ToolbarItem {
             watchMenu
@@ -302,13 +303,12 @@ struct ProjectDetailView: View {
                          photoLibrary: .shared()) {
                 Label("Add from Photos", systemImage: "photo.badge.plus")
             }
-            .disabled(app.engine == nil || isImportingPhotos)
+            .disabled(isImportingPhotos)
         }
         ToolbarItem {
             Button("Files", systemImage: "folder.badge.plus") {
                 showingFileImporter = true
             }
-            .disabled(app.engine == nil)
         }
         #endif
     }
@@ -345,7 +345,7 @@ struct ProjectDetailView: View {
                         intake.enqueue(fileURLs: pendingIntakeURLs,
                                        projectPrefix: project.prefix,
                                        cameraLabel: label.isEmpty ? nil : label,
-                                       app: app)
+                                       session: session)
                         pendingIntakeURLs = []
                         showingCameraLabelPrompt = false
                     }
@@ -362,7 +362,7 @@ struct ProjectDetailView: View {
 
     #if os(macOS)
     private var isWatchingThisProject: Bool {
-        app.watch.activeConfig?.projectPrefix == project.prefix
+        session.watch.activeConfig?.projectPrefix == project.prefix
     }
 
     /// The session camera label (kept by the intake sheet), trimmed; nil when
@@ -379,19 +379,19 @@ struct ProjectDetailView: View {
     /// + Stop; watching another project → offer to move the watch here.
     private var watchMenu: some View {
         Menu {
-            if let config = app.watch.activeConfig {
-                if let path = app.watch.watchedFolderDisplayPath {
+            if let config = session.watch.activeConfig {
+                if let path = session.watch.watchedFolderDisplayPath {
                     Text(path)
                 }
                 if config.projectPrefix != project.prefix {
                     Button("Move Watch Here") {
-                        app.watch.move(projectPrefix: project.prefix,
-                                       cameraLabel: sessionCameraLabelOrNil,
-                                       app: app)
+                        session.watch.move(projectPrefix: project.prefix,
+                                           cameraLabel: sessionCameraLabelOrNil,
+                                           session: session)
                     }
                 }
                 Button("Stop Watching") {
-                    app.watch.disable()
+                    session.watch.disable()
                 }
             } else {
                 Button("Watch a Folder…") {
@@ -401,7 +401,6 @@ struct ProjectDetailView: View {
         } label: {
             Label("Watch Folder", systemImage: isWatchingThisProject ? "eye.fill" : "eye")
         }
-        .disabled(app.engine == nil)
     }
 
     private func handleDrop(_ urls: [URL]) {
@@ -496,14 +495,14 @@ struct ProjectDetailView: View {
     /// ordering the list shows: `clips` is already sorted by `listClips`, and
     /// `DownloadNaming` prefixes filenames from that order.
     private func startDownload(into directory: URL) {
-        guard let client = app.client, !clips.isEmpty else { return }
-        let controller = DownloadController(client: client)
+        guard !clips.isEmpty else { return }
+        let controller = DownloadController(client: session.client)
         controller.start(clips: clips, manifest: project.manifest, directory: directory)
         download = controller
     }
 
     private func refresh() async {
-        guard let reader = app.reader else { return }
+        let reader = session.reader
         isLoading = true
         defer { isLoading = false }
         do {
@@ -811,7 +810,7 @@ private struct ClipThumbnail: View {
 /// Edits the mutable sidecar fields. Fields are populated from the clip on
 /// first appearance (not in init, to stay friendly with the @State macro).
 private struct ClipEditSheet: View {
-    @Environment(AppModel.self) private var app
+    @Environment(ServerSession.self) private var session
     @Environment(\.dismiss) private var dismiss
     var clip: Clip
     var onSaved: () async -> Void
@@ -858,7 +857,7 @@ private struct ClipEditSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(isSaving || app.writer == nil
+                        .disabled(isSaving
                                   || displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -880,7 +879,8 @@ private struct ClipEditSheet: View {
     }
 
     private func save() {
-        guard let writer = app.writer, !isSaving else { return }
+        guard !isSaving else { return }
+        let writer = session.writer
         isSaving = true
         var sidecar = clip.sidecar
         sidecar.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -902,9 +902,7 @@ private struct ClipEditSheet: View {
     }
 }
 
-#Preview("Project detail (unconfigured model, no network)") {
-    // AppModel() without saved settings has no reader/engine, so the view
-    // renders its empty state without touching the network.
+#Preview("Project detail (placeholder server, unreachable endpoint)") {
     NavigationStack {
         ProjectDetailView(project: ProjectRef(
             prefix: "acme-x1/gala-k9/",
@@ -912,5 +910,5 @@ private struct ClipEditSheet: View {
                                       sortIndex: nil,
                                       createdAt: Date(timeIntervalSince1970: 1_700_000_000))))
     }
-    .environment(AppModel())
+    .environment(ServerSession.preview())
 }

@@ -21,6 +21,7 @@ extension UploadJob.State {
 /// whenever `IntakeModel.active` changes (the engine persists every state
 /// transition, so a reload after any active change is always current).
 struct UploadQueueView: View {
+    @Environment(ServerSession.self) private var session
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
 
@@ -30,8 +31,8 @@ struct UploadQueueView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let error = app.intake.lastError {
-                    errorLine(error) { app.intake.lastError = nil }
+                if let error = session.intake.lastError {
+                    errorLine(error) { session.intake.lastError = nil }
                 }
                 list
             }
@@ -50,7 +51,7 @@ struct UploadQueueView: View {
             .safeAreaInset(edge: .bottom) { footer }
         }
         .task { await reload() }
-        .onChange(of: app.intake.active) {
+        .onChange(of: session.intake.active) {
             Task { await reload() }
         }
         #if os(macOS)
@@ -66,12 +67,12 @@ struct UploadQueueView: View {
                                    description: Text("Clips you add appear here while they upload."))
         } else {
             List(jobs) { job in
-                let live = app.intake.active.first { $0.id == job.id }
+                let live = session.intake.active.first { $0.id == job.id }
                 UploadQueueRow(job: job,
                                liveProgress: liveProgress(for: job),
-                               isRunning: job.id == app.intake.runningJobID,
+                               isRunning: job.id == session.intake.runningJobID,
                                nextAutoRetry: live?.nextAutoRetry,
-                               onRetry: { app.intake.retry(jobID: job.id, app: app) },
+                               onRetry: { session.intake.retry(jobID: job.id, session: session) },
                                onRemove: { remove(job) })
             }
             .refreshable { await reload() }
@@ -79,10 +80,11 @@ struct UploadQueueView: View {
     }
 
     /// Maintenance results surface here, subtly — e.g. "Cleaned 2 stale
-    /// uploads" from the sweep that runs when the app becomes configured.
+    /// uploads" from this server's sweep, or the app-wide staging cleanup.
     @ViewBuilder private var footer: some View {
-        if let note = app.maintenanceNote {
-            Text(note)
+        let notes = [session.maintenanceNote, app.maintenanceNote].compactMap { $0 }
+        if !notes.isEmpty {
+            Text(notes.joined(separator: " · "))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
@@ -112,18 +114,18 @@ struct UploadQueueView: View {
     /// jobs only known from the persisted store.
     private func liveProgress(for job: UploadJob) -> Double? {
         guard case .uploading = job.state else { return nil }
-        return app.intake.active.first { $0.id == job.id }?.progress
+        return session.intake.active.first { $0.id == job.id }?.progress
     }
 
     private func reload() async {
         isLoading = true
         defer { isLoading = false }
-        jobs = await app.store.load()
+        jobs = await session.store.load()
     }
 
     private func remove(_ job: UploadJob) {
         Task {
-            await app.intake.remove(jobID: job.id, app: app)
+            await session.intake.remove(jobID: job.id, session: session)
             await reload()
         }
     }
@@ -217,10 +219,8 @@ private struct UploadQueueRow: View {
     }
 }
 
-#Preview("Upload queue (unconfigured model, no network)") {
-    // AppModel() without saved settings has no engine; the view renders
-    // whatever the local store holds (usually the empty state) without
-    // touching the network.
+#Preview("Upload queue (placeholder server)") {
     UploadQueueView()
+        .environment(ServerSession.preview())
         .environment(AppModel())
 }

@@ -7,10 +7,13 @@ import SwiftUI
 /// collapses into a navigation-stack presentation, so no size-class branching
 /// is needed — one hierarchy serves macOS, iPad, and iPhone.
 struct BrowseRootView: View {
-    @Environment(AppModel.self) private var app
-    @Binding var showingSettings: Bool
+    @Environment(ServerSession.self) private var session
+    /// iOS: navigates back to the server list. nil on macOS, where the
+    /// Servers window is always reachable from the Window menu.
+    var onShowServers: (() -> Void)? = nil
 
     @State private var browse = BrowseModel()
+    @State private var showingServerEditor = false
     @State private var selectedClientID: ClientRef.ID?
     @State private var selectedProjectID: ProjectRef.ID?
     @State private var showingUploadQueue = false
@@ -19,8 +22,9 @@ struct BrowseRootView: View {
         NavigationSplitView {
             ClientListView(browse: browse,
                            selection: $selectedClientID,
-                           showingSettings: $showingSettings,
-                           showingUploadQueue: $showingUploadQueue)
+                           showingServerEditor: $showingServerEditor,
+                           showingUploadQueue: $showingUploadQueue,
+                           onShowServers: onShowServers)
         } content: {
             if let client = selectedClient {
                 ProjectListView(browse: browse, client: client,
@@ -38,15 +42,19 @@ struct BrowseRootView: View {
                     .padding()
             }
         }
-        .task {
-            guard let reader = app.reader else { return }
-            await browse.refreshClients(reader: reader)
+        .task(id: session.profile.settings) {
+            // Re-runs when the server's connection settings are edited, so
+            // the list reflects the new bucket without a manual refresh.
+            await browse.refreshClients(reader: session.reader)
         }
         .onChange(of: selectedClientID) {
             selectedProjectID = nil
         }
         .sheet(isPresented: $showingUploadQueue) {
             UploadQueueView()
+        }
+        .sheet(isPresented: $showingServerEditor) {
+            ServerEditorView(existing: session.profile)
         }
     }
 
@@ -63,11 +71,12 @@ struct BrowseRootView: View {
 // MARK: - Clients column
 
 struct ClientListView: View {
-    @Environment(AppModel.self) private var app
+    @Environment(ServerSession.self) private var session
     var browse: BrowseModel
     @Binding var selection: ClientRef.ID?
-    @Binding var showingSettings: Bool
+    @Binding var showingServerEditor: Bool
     @Binding var showingUploadQueue: Bool
+    var onShowServers: (() -> Void)? = nil
 
     @State private var showingNewClient = false
     @State private var newClientName = ""
@@ -85,22 +94,35 @@ struct ClientListView: View {
         }
         .navigationTitle("Clients")
         .toolbar {
+            if let onShowServers {
+                ToolbarItem(placement: .navigation) {
+                    Button("Servers", systemImage: "chevron.backward", action: onShowServers)
+                }
+            }
             #if os(macOS)
-            Button("Refresh", systemImage: "arrow.clockwise") {
-                Task { await refresh() }
+            ToolbarItem {
+                Button("Refresh", systemImage: "arrow.clockwise") {
+                    Task { await refresh() }
+                }
+                .disabled(browse.isLoading)
             }
-            .disabled(browse.isLoading)
             #endif
-            Button("New Client", systemImage: "plus") {
-                newClientName = ""
-                showingNewClient = true
+            ToolbarItem {
+                Button("New Client", systemImage: "plus") {
+                    newClientName = ""
+                    showingNewClient = true
+                }
+                .disabled(browse.isMutating)
             }
-            .disabled(browse.isMutating || app.writer == nil)
-            UploadQueueButton(activeCount: app.intake.active.count) {
-                showingUploadQueue = true
+            ToolbarItem {
+                UploadQueueButton(activeCount: session.intake.active.count) {
+                    showingUploadQueue = true
+                }
             }
-            Button("Settings", systemImage: "gearshape") {
-                showingSettings = true
+            ToolbarItem {
+                Button("Edit Server", systemImage: "gearshape") {
+                    showingServerEditor = true
+                }
             }
         }
         .onDisappear { previewTask?.cancel() }
@@ -117,8 +139,8 @@ struct ClientListView: View {
             TextField("Client name", text: $newClientName)
             Button("Create") {
                 let name = newClientName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty, let writer = app.writer, let reader = app.reader else { return }
-                Task { await browse.createClient(name: name, writer: writer, reader: reader) }
+                guard !name.isEmpty else { return }
+                Task { await browse.createClient(name: name, writer: session.writer, reader: session.reader) }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -126,8 +148,8 @@ struct ClientListView: View {
             TextField("Client name", text: $renameText)
             Button("Rename") {
                 let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty, let writer = app.writer, let reader = app.reader else { return }
-                Task { await browse.renameClient(client, to: name, writer: writer, reader: reader) }
+                guard !name.isEmpty else { return }
+                Task { await browse.renameClient(client, to: name, writer: session.writer, reader: session.reader) }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -178,7 +200,7 @@ struct ClientListView: View {
     }
 
     private var deletionDisabled: Bool {
-        browse.isMutating || previewingID != nil || app.writer == nil
+        browse.isMutating || previewingID != nil
     }
 
     private func beginRename(_ client: ClientRef) {
@@ -190,7 +212,7 @@ struct ClientListView: View {
     /// confirmation dialog. The fetch is cancellable (superseded request or
     /// view teardown) and its row shows a small spinner while it runs.
     private func beginDelete(_ client: ClientRef) {
-        guard let writer = app.writer else { return }
+        let writer = session.writer
         previewTask?.cancel()
         previewingID = client.id
         previewTask = Task {
@@ -209,9 +231,9 @@ struct ClientListView: View {
     }
 
     private func performDelete(_ prompt: DeletionPrompt) {
-        guard let writer = app.writer, let reader = app.reader else { return }
         Task {
-            await browse.deleteClient(prefix: prompt.prefix, writer: writer, reader: reader)
+            await browse.deleteClient(prefix: prompt.prefix,
+                                      writer: session.writer, reader: session.reader)
             // Deleting the selected client clears the selection — unless the
             // delete failed and the client survived the refresh.
             if selection == prompt.prefix,
@@ -222,15 +244,14 @@ struct ClientListView: View {
     }
 
     private func refresh() async {
-        guard let reader = app.reader else { return }
-        await browse.refreshClients(reader: reader)
+        await browse.refreshClients(reader: session.reader)
     }
 }
 
 // MARK: - Projects column
 
 struct ProjectListView: View {
-    @Environment(AppModel.self) private var app
+    @Environment(ServerSession.self) private var session
     var browse: BrowseModel
     var client: ClientRef
     @Binding var selection: ProjectRef.ID?
@@ -261,7 +282,7 @@ struct ProjectListView: View {
                 newProjectName = ""
                 showingNewProject = true
             }
-            .disabled(browse.isMutating || app.writer == nil)
+            .disabled(browse.isMutating)
         }
         .task(id: client.prefix) {
             await refresh()
@@ -280,10 +301,10 @@ struct ProjectListView: View {
             TextField("Project name", text: $newProjectName)
             Button("Create") {
                 let name = newProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty, let writer = app.writer, let reader = app.reader else { return }
+                guard !name.isEmpty else { return }
                 Task {
                     await browse.createProject(name: name, in: client.prefix,
-                                               writer: writer, reader: reader)
+                                               writer: session.writer, reader: session.reader)
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -292,10 +313,10 @@ struct ProjectListView: View {
             TextField("Project name", text: $renameText)
             Button("Rename") {
                 let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty, let writer = app.writer, let reader = app.reader else { return }
+                guard !name.isEmpty else { return }
                 Task {
                     await browse.renameProject(project, to: name, in: client.prefix,
-                                               writer: writer, reader: reader)
+                                               writer: session.writer, reader: session.reader)
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -365,7 +386,7 @@ struct ProjectListView: View {
     }
 
     private var deletionDisabled: Bool {
-        browse.isMutating || previewingID != nil || app.writer == nil
+        browse.isMutating || previewingID != nil
     }
 
     private func beginRename(_ project: ProjectRef) {
@@ -376,7 +397,7 @@ struct ProjectListView: View {
     /// Fetches what deleting this project would remove, then raises the
     /// confirmation dialog. See `ClientListView.beginDelete` for the shape.
     private func beginDelete(_ project: ProjectRef) {
-        guard let writer = app.writer else { return }
+        let writer = session.writer
         previewTask?.cancel()
         previewingID = project.id
         previewTask = Task {
@@ -395,10 +416,9 @@ struct ProjectListView: View {
     }
 
     private func performDelete(_ prompt: DeletionPrompt) {
-        guard let writer = app.writer, let reader = app.reader else { return }
         Task {
             await browse.deleteProject(prefix: prompt.prefix, in: client.prefix,
-                                       writer: writer, reader: reader)
+                                       writer: session.writer, reader: session.reader)
             // Deleting the selected project clears the selection — unless the
             // delete failed and the project survived the refresh.
             if selection == prompt.prefix,
@@ -409,18 +429,16 @@ struct ProjectListView: View {
     }
 
     private func refresh() async {
-        guard let reader = app.reader else { return }
-        await browse.refreshProjects(reader: reader, clientPrefix: client.prefix)
+        await browse.refreshProjects(reader: session.reader, clientPrefix: client.prefix)
     }
 
     /// Hands an `onMove` reorder to the model (optimistic local move, then
     /// sortIndex writes, then refresh).
     private func moveRows(from: IndexSet, to: Int) {
-        guard !browse.isMutating,
-              let writer = app.writer, let reader = app.reader else { return }
+        guard !browse.isMutating else { return }
         Task {
             await browse.moveProjects(in: client.prefix, from: from, to: to,
-                                      writer: writer, reader: reader)
+                                      writer: session.writer, reader: session.reader)
         }
     }
 }
@@ -540,9 +558,8 @@ struct BrowseStatusHeader: View {
     }
 }
 
-#Preview("Browse (unconfigured model, no network)") {
-    // AppModel() without saved settings has no reader/writer, so the browse
-    // views render their empty states without touching the network.
-    BrowseRootView(showingSettings: .constant(false))
+#Preview("Browse (placeholder server, unreachable endpoint)") {
+    BrowseRootView()
+        .environment(ServerSession.preview())
         .environment(AppModel())
 }

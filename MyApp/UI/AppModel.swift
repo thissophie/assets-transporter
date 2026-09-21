@@ -1,127 +1,158 @@
 import Foundation
 import Observation
+import SwiftUI   // IndexSet-based move(fromOffsets:toOffset:) for List.onMove
 
-/// App-wide state: the stored S3 settings and the service stack built from
-/// them (client, reader, writer, upload engine). Unconfigured until settings
-/// exist; a Keychain read failure at launch surfaces in `configError` instead
-/// of crashing.
+/// App-wide state: the list of named servers (Keychain-backed) and the live
+/// `ServerSession` for each server that has been opened this run.
+///
+/// Servers are the app's "documents": each one gets its own window on macOS
+/// (`MyApp` opens a `WindowGroup` scene keyed by profile id) and the server
+/// list is the library window. A session is created lazily the first time a
+/// server is opened — or eagerly at launch when the server has local
+/// background work (persisted watch, queued uploads) — and is then kept for
+/// the rest of the run, so closing a window never interrupts an upload.
 @Observable @MainActor final class AppModel {
-    private(set) var settings: StoredS3Settings?
-    private(set) var client: S3Client?
-    private(set) var reader: BucketReader?
-    private(set) var writer: BucketWriter?
-    private(set) var engine: UploadEngine?
+    private(set) var servers: [ServerProfile] = []
 
-    /// Single shared queue store — multiple instances would race on the
-    /// backing file.
-    let store = UploadQueueStore()
-
-    /// Single shared intake/upload coordinator. App-wide (not per project
-    /// view) so its `isRunning`/`runningJobID` guards actually serialize all
-    /// uploads, and the queue screen can retry/remove jobs safely.
-    let intake = IntakeModel()
-
-    #if os(macOS)
-    /// Watched-folder coordinator: monitors one designated folder and queues
-    /// new videos into a pre-chosen project (re-armed in `install` once the
-    /// upload stack exists).
-    let watch = WatchManager()
-    #endif
-
-    /// Set when loading saved settings from the Keychain fails at launch.
+    /// Set when loading saved servers from the Keychain fails at launch.
     var configError: String?
 
-    /// Result of the most recent maintenance pass (stale-upload sweep +
-    /// staging orphan cleanup, run whenever the model becomes configured),
-    /// surfaced subtly in the upload queue screen's footer. nil when there
-    /// was nothing to report.
+    /// Result of the app-wide staging sweep at launch (orphaned staged files
+    /// no server's queue references). nil when there was nothing to report.
     private(set) var maintenanceNote: String?
 
-    private let credentials = CredentialStore()
+    /// Set by the File ▸ New Server… command (macOS) so the Servers window
+    /// presents its editor; the window clears it once the sheet is up.
+    var presentNewServerEditor = false
 
-    var isConfigured: Bool { client != nil }
+    /// Not observed: `session(for:)` fills this lazily from inside view
+    /// bodies (`ServerWindowView`), and an observed write there would
+    /// re-trigger the very body that caused it. Views observe the session
+    /// object itself once they hold it.
+    @ObservationIgnored private var sessions: [ServerProfile.ID: ServerSession] = [:]
+    private let credentials: CredentialStore
+    private let queueRoot: URL
+    private let defaults: UserDefaults
 
-    init() {
+    init(credentials: CredentialStore = CredentialStore(),
+         queueRoot: URL = ServerLocalState.defaultQueueRoot,
+         defaults: UserDefaults = .standard) {
+        self.credentials = credentials
+        self.queueRoot = queueRoot
+        self.defaults = defaults
         do {
-            if let stored = try credentials.load() {
-                install(stored)
+            let loaded = try credentials.loadServers()
+            servers = loaded.servers
+            if let migrated = loaded.migratedLegacyServerID {
+                // Best effort: a failed move leaves the legacy files in place,
+                // which only costs a cold queue/watch for that server.
+                try? ServerLocalState.migrateLegacyState(root: queueRoot, defaults: defaults,
+                                                         to: migrated)
             }
         } catch {
-            configError = "Saved settings could not be loaded from the Keychain "
-                + "(\(String(describing: error))). Enter them again to reconnect."
+            configError = "Saved servers could not be loaded from the Keychain "
+                + "(\(String(describing: error))). Add the server again to reconnect."
         }
+        startBackgroundSessions()
+        sweepStagingOrphans()
     }
 
-    /// Persists `settings` to the Keychain, then rebuilds the service stack.
-    /// All-or-nothing: if the Keychain save throws, existing state is untouched.
-    func apply(_ settings: StoredS3Settings) throws {
-        try credentials.save(settings)
-        install(settings)
+    // MARK: - Lookup
+
+    var isEmpty: Bool { servers.isEmpty }
+
+    func server(id: ServerProfile.ID) -> ServerProfile? {
+        servers.first { $0.id == id }
+    }
+
+    /// The live session for a server, created on first use. nil when no such
+    /// server exists (e.g. a restored window for a since-deleted server).
+    func session(for id: ServerProfile.ID) -> ServerSession? {
+        if let session = sessions[id] { return session }
+        guard let profile = server(id: id) else { return nil }
+        let session = ServerSession(
+            profile: profile,
+            queueDirectory: ServerLocalState.queueDirectory(root: queueRoot, serverID: id),
+            defaults: defaults)
+        sessions[id] = session
+        return session
+    }
+
+    /// Sessions that exist this run — for status display, not creation.
+    func existingSession(for id: ServerProfile.ID) -> ServerSession? {
+        sessions[id]
+    }
+
+    // MARK: - Mutation (all-or-nothing: Keychain first, then in-memory state)
+
+    func add(_ profile: ServerProfile) throws {
+        try persist(servers + [profile])
+    }
+
+    /// Persists an edited profile and hands it to the live session (if any),
+    /// which rebuilds its stack only when the connection settings changed.
+    func update(_ profile: ServerProfile) throws {
+        guard let index = servers.firstIndex(where: { $0.id == profile.id }) else { return }
+        var updated = servers
+        updated[index] = profile
+        try persist(updated)
+        sessions[profile.id]?.update(profile: profile)
+    }
+
+    /// Removes the server, its Keychain entry, and all of its local state
+    /// (queue file, watched folder). Refuses while an upload is running for
+    /// it — the caller disables Delete in that case, this is the guard.
+    func remove(id: ServerProfile.ID) throws {
+        guard !(sessions[id]?.isUploading ?? false) else { return }
+        try persist(servers.filter { $0.id != id })
+        sessions[id]?.shutDown()
+        sessions[id] = nil
+        ServerLocalState.removeAll(root: queueRoot, defaults: defaults, serverID: id)
+    }
+
+    func move(fromOffsets: IndexSet, toOffset: Int) throws {
+        var reordered = servers
+        reordered.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        try persist(reordered)
+    }
+
+    private func persist(_ updated: [ServerProfile]) throws {
+        try credentials.saveServers(updated)
+        servers = updated
         configError = nil
     }
 
-    /// Deletes the Keychain item and tears down the stack.
-    func clearSettings() {
-        credentials.delete()
-        settings = nil
-        client = nil
-        reader = nil
-        writer = nil
-        engine = nil
+    // MARK: - Launch work
+
+    /// Starts sessions for servers with local background work so persisted
+    /// watches re-arm and interrupted uploads resume without a window.
+    private func startBackgroundSessions() {
+        for profile in servers
+        where ServerLocalState.hasBackgroundWork(root: queueRoot, defaults: defaults,
+                                                 serverID: profile.id) {
+            _ = session(for: profile.id)
+        }
     }
 
-    private func install(_ settings: StoredS3Settings) {
-        let (client, reader, writer) = Self.buildStack(settings: settings)
-        self.settings = settings
-        self.client = client
-        self.reader = reader
-        self.writer = writer
-        let engine = UploadEngine(client: client, store: store)
-        self.engine = engine
-        runMaintenance(engine: engine)
-        intake.resumePersistedJobs(app: self)
-        #if os(macOS)
-        // After the stack exists, so restored watches can actually upload.
-        watch.restoreIfConfigured(app: self)
-        #endif
-    }
-
-    /// Uploads must be at least this old before the sweep may abort them:
-    /// other devices upload into the same bucket, and "not in OUR store" says
-    /// nothing about THEIR in-flight uploads. 48 hours comfortably outlives
-    /// any real upload attempt.
-    private static let staleUploadAge: TimeInterval = 48 * 60 * 60
-
-    /// Best-effort background maintenance whenever the model becomes
-    /// configured: (1) abort server-side multipart uploads that are both
-    /// unowned locally AND older than `staleUploadAge` (each abandoned attempt
-    /// otherwise keeps billable parts forever), (2) delete orphaned staged
-    /// files no stored job references. Fire-and-forget — all awaits happen
-    /// inside the task, so becoming configured never blocks; the outcome
-    /// (including failure) only surfaces via `maintenanceNote`.
-    private func runMaintenance(engine: UploadEngine) {
+    /// Deletes staged files that no server's queue references. Reads every
+    /// server's store (not just the live sessions') so a server that is not
+    /// open cannot have its staged copies swept from under it.
+    private func sweepStagingOrphans() {
+        let stores = servers.map {
+            UploadQueueStore(directory: ServerLocalState.queueDirectory(root: queueRoot,
+                                                                        serverID: $0.id))
+        }
         Task {
-            var notes: [String] = []
-            let liveJobs = await store.load()
-            do {
-                let aborted = try await engine.abandonStaleUploads(
-                    prefix: "", liveJobs: liveJobs,
-                    olderThan: Date(timeIntervalSinceNow: -Self.staleUploadAge))
-                // Only report when something happened; a quiet sweep shouldn't
-                // clear a real note from a previous configuration.
-                if aborted > 0 {
-                    notes.append("Cleaned \(aborted) stale upload\(aborted == 1 ? "" : "s")")
-                }
-            } catch {
-                notes.append("Stale-upload cleanup didn't run — it will retry next launch.")
+            var liveJobs: [UploadJob] = []
+            for store in stores {
+                liveJobs += await store.load()
             }
             let removed = await Task.detached {
                 Self.removeOrphanedStagingFiles(jobs: liveJobs)
             }.value
             if removed > 0 {
-                notes.append("Removed \(removed) orphaned staged file\(removed == 1 ? "" : "s")")
+                maintenanceNote = "Removed \(removed) orphaned staged file\(removed == 1 ? "" : "s")"
             }
-            if !notes.isEmpty { maintenanceNote = notes.joined(separator: " · ") }
         }
     }
 
@@ -148,20 +179,5 @@ import Observation
             removed += 1
         }
         return removed
-    }
-
-    /// Pure stack construction from settings — no Keychain, no stored state.
-    /// iOS uses the shared background transport so uploads survive suspension;
-    /// macOS uses a plain URLSession transport.
-    nonisolated static func buildStack(
-        settings: StoredS3Settings
-    ) -> (client: S3Client, reader: BucketReader, writer: BucketWriter) {
-        #if os(iOS)
-        let transport: any S3Transport = BackgroundTransport.shared
-        #else
-        let transport: any S3Transport = URLSessionTransport()
-        #endif
-        let client = S3Client(config: settings.makeS3Config(), transport: transport)
-        return (client, BucketReader(client: client), BucketWriter(client: client))
     }
 }

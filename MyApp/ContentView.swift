@@ -1,27 +1,25 @@
 import SwiftUI
 
-/// First-run: shows the settings form until a connection is configured.
-/// Once configured, shows the client/project browsing UI.
+/// iOS root: the server list, or — once a server is chosen — that server's
+/// browse UI in place. The choice is remembered across launches so a phone
+/// with one server lands straight in it. (macOS uses separate scenes; see
+/// `MyApp`.)
 struct ContentView: View {
-    @Environment(AppModel.self) private var model
-    @State private var showingSettings = false
+    @Environment(AppModel.self) private var app
+    @AppStorage("openServerID") private var openServerIDString = ""
 
     var body: some View {
-        if !model.isConfigured {
-            SettingsView()
+        if let id = openServerID, app.server(id: id) != nil {
+            ServerWindowView(serverID: id) { openServerIDString = "" }
         } else {
-            BrowseRootView(showingSettings: $showingSettings)
-            .sheet(isPresented: $showingSettings) {
-                NavigationStack {
-                    SettingsView()
-                        .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button("Done") { showingSettings = false }
-                            }
-                        }
-                }
+            NavigationStack {
+                ServerListView { id in openServerIDString = id.uuidString }
             }
         }
+    }
+
+    private var openServerID: ServerProfile.ID? {
+        UUID(uuidString: openServerIDString)
     }
 }
 

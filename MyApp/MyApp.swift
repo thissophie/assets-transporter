@@ -31,22 +31,64 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 #endif
 
+/// Scenes. macOS behaves like a multi-document app: the "Servers" window is
+/// the library, and each server opens in its own window (a `WindowGroup`
+/// keyed by profile id, so opening the same server again just raises its
+/// window). Window state restoration brings the open servers back on
+/// relaunch. iOS is single-scene: `ContentView` swaps between the list and
+/// the chosen server.
 @main struct MyApp: App {
     @State private var model = AppModel()
     #if os(iOS)
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #endif
 
+    static let serversWindowID = "servers"
+    static let serverWindowID = "server"
+
     var body: some Scene {
+        #if os(macOS)
+        Window("Servers", id: Self.serversWindowID) {
+            ServerListView()
+                .environment(model)
+        }
+        .defaultSize(width: 420, height: 320)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Server…") {
+                    model.presentNewServerEditor = true
+                    openWindow(id: Self.serversWindowID)
+                }
+                .keyboardShortcut("n")
+            }
+            CommandGroup(before: .windowList) {
+                Button("Servers") { openWindow(id: Self.serversWindowID) }
+                    .keyboardShortcut("0", modifiers: [.command, .shift])
+            }
+        }
+
+        WindowGroup(id: Self.serverWindowID, for: ServerProfile.ID.self) { $serverID in
+            if let serverID {
+                ServerWindowView(serverID: serverID)
+                    .environment(model)
+            } else {
+                // Only reachable through state restoration of a window that
+                // never got a value; there's nothing to show for it.
+                ContentUnavailableView("No server selected", systemImage: "server.rack",
+                                       description: Text("Choose a server from the Servers window."))
+                    .environment(model)
+            }
+        }
+        .defaultSize(width: 1000, height: 640)
+        #else
         WindowGroup {
             ContentView()
                 .environment(model)
         }
-        #if os(macOS)
-        Settings {
-            SettingsView()
-                .environment(model)
-        }
         #endif
     }
+
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
 }

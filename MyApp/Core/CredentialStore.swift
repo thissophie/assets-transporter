@@ -1,7 +1,8 @@
 import Foundation
 import Security
 
-/// S3 connection settings persisted to the Keychain as a single JSON blob.
+/// S3 connection settings for one server. Persisted to the Keychain as part
+/// of the `ServerProfile` list.
 nonisolated struct StoredS3Settings: Codable, Equatable, Sendable {
     var endpoint: URL
     var bucket: String
@@ -11,7 +12,14 @@ nonisolated struct StoredS3Settings: Codable, Equatable, Sendable {
     var region: String
 }
 
-/// Thin Keychain wrapper storing S3 settings under one generic-password item.
+/// Thin Keychain wrapper storing the server list under one generic-password
+/// item (`account = "servers"`, a JSON array of `ServerProfile`).
+///
+/// Before multi-server support the app kept a single `StoredS3Settings` blob
+/// under `account = "default"`. `loadServers` migrates that item into a
+/// one-entry list on first read (and deletes it), so an upgrade keeps the
+/// user's connection; the migrated profile's id is reported back so the
+/// caller can move that server's local state (queue file, watch config) too.
 nonisolated struct CredentialStore {
     enum StoreError: Error {
         case encodingFailed
@@ -19,18 +27,55 @@ nonisolated struct CredentialStore {
         case keychain(OSStatus)
     }
 
-    var service: String = "video-transfer.s3"
-    private static let account = "default"
+    /// Result of `loadServers`: the list, plus the id of a profile that was
+    /// just created from the legacy single-settings item (nil normally).
+    struct LoadResult {
+        var servers: [ServerProfile]
+        var migratedLegacyServerID: UUID?
+    }
 
-    /// Persists `settings`, replacing any existing item (delete-then-add).
-    func save(_ settings: StoredS3Settings) throws {
-        guard let data = try? JSONEncoder().encode(settings) else {
+    var service: String = "video-transfer.s3"
+    private static let serversAccount = "servers"
+    private static let legacyAccount = "default"
+
+    /// Persists the whole list, replacing any existing item (delete-then-add).
+    func saveServers(_ servers: [ServerProfile]) throws {
+        guard let data = try? JSONEncoder().encode(servers) else {
             throw StoreError.encodingFailed
         }
+        try write(data, account: Self.serversAccount)
+    }
 
-        delete()
+    /// Returns the stored servers (empty when nothing is stored), migrating
+    /// the legacy single-settings item if that is all that exists. Throws
+    /// for any Keychain failure other than "not found", or if a blob fails
+    /// to decode.
+    func loadServers() throws -> LoadResult {
+        if let data = try read(account: Self.serversAccount) {
+            return LoadResult(servers: try JSONDecoder().decode([ServerProfile].self, from: data),
+                              migratedLegacyServerID: nil)
+        }
+        guard let legacyData = try read(account: Self.legacyAccount) else {
+            return LoadResult(servers: [], migratedLegacyServerID: nil)
+        }
+        let legacy = try JSONDecoder().decode(StoredS3Settings.self, from: legacyData)
+        let profile = ServerProfile(name: ServerProfile.migratedName(for: legacy), settings: legacy)
+        try saveServers([profile])
+        delete(account: Self.legacyAccount)
+        return LoadResult(servers: [profile], migratedLegacyServerID: profile.id)
+    }
 
-        var attributes = baseQuery()
+    /// Removes every item this store owns; missing items are not an error.
+    func deleteAll() {
+        delete(account: Self.serversAccount)
+        delete(account: Self.legacyAccount)
+    }
+
+    // MARK: - Keychain plumbing
+
+    private func write(_ data: Data, account: String) throws {
+        delete(account: account)
+        var attributes = baseQuery(account: account)
         attributes[kSecValueData as String] = data
         // Readable during background transfers once the device has been unlocked,
         // and never migrated to another device.
@@ -41,10 +86,8 @@ nonisolated struct CredentialStore {
         }
     }
 
-    /// Returns the stored settings, or nil when no item exists.
-    /// Throws for any other Keychain failure or if the blob fails to decode.
-    func load() throws -> StoredS3Settings? {
-        var query = baseQuery()
+    private func read(account: String) throws -> Data? {
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -53,7 +96,7 @@ nonisolated struct CredentialStore {
         switch status {
         case errSecSuccess:
             guard let data = result as? Data else { throw StoreError.unexpectedData }
-            return try JSONDecoder().decode(StoredS3Settings.self, from: data)
+            return data
         case errSecItemNotFound:
             return nil
         default:
@@ -61,21 +104,15 @@ nonisolated struct CredentialStore {
         }
     }
 
-    /// Loads stored settings and bridges them to an S3Config; nil if nothing is stored.
-    func makeS3Config() throws -> S3Config? {
-        try load()?.makeS3Config()
+    private func delete(account: String) {
+        SecItemDelete(baseQuery(account: account) as CFDictionary)
     }
 
-    /// Removes the stored settings; missing items are not an error.
-    func delete() {
-        SecItemDelete(baseQuery() as CFDictionary)
-    }
-
-    private func baseQuery() -> [String: Any] {
+    private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: Self.account,
+            kSecAttrAccount as String: account,
             kSecUseDataProtectionKeychain as String: true,
         ]
     }

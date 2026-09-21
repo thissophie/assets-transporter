@@ -5,8 +5,11 @@
 //  End-to-end drive of the real macOS app against the local ministack S3
 //  emulator (http://localhost:4566, bucket "it-video"). See docs/ for the
 //  verification plan. This test is intentionally one long ordered scenario:
-//  first-run settings → client/project creation → watched-folder intake →
+//  server creation → client/project creation → watched-folder intake →
 //  bucket verification → edit → relaunch persistence → second intake → delete.
+//
+//  The app keeps a list of named servers; the tests work in their own
+//  "E2E ministack" server and never touch any other saved server.
 //
 
 import XCTest
@@ -15,6 +18,8 @@ final class MyAppUITests: XCTestCase {
 
     static let appBundleID = "com.tamatekapua.AssetTransporter"
     static let bucketBase = "http://localhost:4566/it-video"
+    /// The server profile the tests create for themselves.
+    static let e2eServerName = "E2E ministack"
     // The runner is sandboxed: write artifacts + coordination markers into our
     // own container tmp; the outer harness reads them (and performs WatchDrop
     // copies when it sees a marker file).
@@ -222,6 +227,52 @@ final class MyAppUITests: XCTestCase {
         app.typeText(text)
     }
 
+    /// Brings up the E2E server's window: creates the "E2E ministack" server
+    /// in the Servers window if it doesn't exist yet (exercising the form,
+    /// Test Connection, and Save on the way), then opens it by double-click.
+    /// Other saved servers are left untouched. `shotPrefix` names the
+    /// screenshots taken while the form is up (nil = no screenshots).
+    @MainActor
+    func openE2EServer(_ app: XCUIApplication, shotPrefix: String? = nil) {
+        let serverWindow = app.windows[Self.e2eServerName]
+        if serverWindow.waitForExistence(timeout: 5) { return }
+
+        // The Servers (library) window is the launch window, but if a
+        // restored server window has focus instead, summon it (Window ▸ Servers).
+        if !app.windows["Servers"].waitForExistence(timeout: 5) {
+            app.typeKey("0", modifierFlags: [.command, .shift])
+            waitFor(app.windows["Servers"], "Servers window")
+        }
+
+        let row = text(app, Self.e2eServerName)
+        if !row.waitForExistence(timeout: 5) {
+            // Empty list shows an "Add Server…" action; otherwise the toolbar +.
+            let addButton = app.buttons["Add Server…"]
+            if addButton.exists { addButton.click() } else { clickToolbar(app, "New Server") }
+
+            let nameField = field(app, "Production")
+            waitFor(nameField, "Server name field")
+            if let shotPrefix { shoot(app, "\(shotPrefix)-server-form") }
+            fill(nameField, Self.e2eServerName, app: app)
+            fill(field(app, "https://s3.example.com:9000"), "http://localhost:4566", app: app)
+            fill(field(app, "Bucket"), "it-video", app: app)
+            // Region stays us-east-1; path-style toggle defaults ON — verify it.
+            let pathToggle = app.switches.firstMatch
+            XCTAssertEqual(pathToggle.value as? Int, 1, "path-style toggle should default ON")
+            fill(field(app, "Access Key"), "test", app: app)
+            fill(app.secureTextFields.firstMatch, "test", app: app)
+
+            app.buttons["Test Connection"].click()
+            waitFor(staticTextBeginning(app, "✓ Connected"), "Test Connection success line")
+            if let shotPrefix { shoot(app, "\(shotPrefix)-test-connection-ok") }
+
+            app.buttons["Save"].click()
+            waitFor(row, "E2E server row after save")
+        }
+        row.doubleClick()
+        waitFor(serverWindow, "E2E server window")
+    }
+
     // MARK: - Focused: project selection + reorder
 
     /// displayName → sortIndex for every project manifest in the bucket
@@ -250,15 +301,9 @@ final class MyAppUITests: XCTestCase {
         _ = app.windows.firstMatch.waitForExistence(timeout: 30)
         zoomWindow(app)
 
-        // Reach the browse UI; configure against ministack on first run.
-        let endpointField = field(app, "https://s3.example.com:9000")
-        if endpointField.waitForExistence(timeout: 10) {
-            fill(endpointField, "http://localhost:4566", app: app)
-            fill(field(app, "Bucket"), "it-video", app: app)
-            fill(field(app, "Access Key"), "test", app: app)
-            fill(app.secureTextFields.firstMatch, "test", app: app)
-            app.buttons["Save"].click()
-        }
+        // Reach the browse UI for the E2E server (created on first run).
+        openE2EServer(app)
+        zoomWindow(app)
 
         // Enter the client (single plain click — no fallbacks).
         let acmeRow = text(app, "Acme Corp")
@@ -348,42 +393,15 @@ final class MyAppUITests: XCTestCase {
         diagApp = app
         app.launch()
 
-        // ---- Step 3: settings form ----
-        // First run shows the form directly; if the app is already configured
-        // (persisted Keychain settings), open the Settings sheet instead.
+        // ---- Step 3: server setup ----
+        // The Servers window is the launch window. First run: create the E2E
+        // server (form → Test Connection → Save); later runs find it in the
+        // list. Either way its own window opens — the real server profiles
+        // are never touched.
         _ = app.windows.firstMatch.waitForExistence(timeout: 30)
+        openE2EServer(app, shotPrefix: "01")
         zoomWindow(app)
-        let endpointField = field(app, "https://s3.example.com:9000")
-        let alreadyConfigured = !endpointField.waitForExistence(timeout: 15)
-        if alreadyConfigured {
-            clickToolbar(app, "Settings")
-            waitFor(endpointField, "Endpoint URL field (settings sheet)")
-        }
-        shoot(app, "01-settings-form")
-
-        fill(endpointField, "http://localhost:4566", app: app)
-        fill(field(app, "Bucket"), "it-video", app: app)
-        // Region stays us-east-1; path-style toggle defaults ON — verify it.
-        let pathToggle = app.switches.firstMatch
-        XCTAssertEqual(pathToggle.value as? Int, 1, "path-style toggle should default ON")
-        fill(field(app, "Access Key"), "test", app: app)
-        fill(app.secureTextFields.firstMatch, "test", app: app)
-
-        app.buttons["Test Connection"].click()
-        waitFor(staticTextBeginning(app, "✓ Connected"), "Test Connection success line")
-        shoot(app, "02-test-connection-ok")
-
-        app.buttons["Save"].click()
-        if alreadyConfigured {
-            waitFor(text(app, "Settings saved."), "save confirmation in sheet")
-            app.buttons["Done"].click()
-            RunLoop.current.run(until: Date().addingTimeInterval(1))
-            // The client list still shows the previous endpoint's data;
-            // refresh against the newly saved settings.
-            clickToolbar(app, "Refresh")
-            RunLoop.current.run(until: Date().addingTimeInterval(2))
-        }
-        shoot(app, "03-browse-after-save")
+        shoot(app, "03-browse-after-open")
 
         // ---- Step 4: create client + project ----
         clickToolbar(app, "New Client")
@@ -514,8 +532,13 @@ final class MyAppUITests: XCTestCase {
         _ = app.windows.firstMatch.waitForExistence(timeout: 30)
         zoomWindow(app)
 
-        // Settings persisted (Keychain) → browse UI, not the first-run form.
-        waitFor(text(app, "Acme Corp"), "Acme Corp after relaunch (settings persisted)")
+        // Server persisted (Keychain) → it is in the list and opens straight
+        // into the browse UI; no form. (`openE2EServer` fails the test if it
+        // has to recreate the server.)
+        openE2EServer(app)
+        XCTAssertTrue(text(app, Self.e2eServerName).exists || app.windows[Self.e2eServerName].exists,
+                      "E2E server survived relaunch")
+        waitFor(text(app, "Acme Corp"), "Acme Corp after relaunch (server persisted)")
         selectRow(app, rowText: "Acme Corp", untilExists: text(app, "Spring Gala"))
         waitFor(text(app, "Spring Gala"), "Spring Gala after relaunch")
         selectRow(app, rowText: "Spring Gala", untilExists: text(app, "Opening Shot"))

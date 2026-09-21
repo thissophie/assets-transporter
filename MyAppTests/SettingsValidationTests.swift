@@ -65,3 +65,29 @@ struct SettingsValidationTests {
                                             secretKey: " SK ") == nil)
     }
 }
+
+extension SettingsValidationTests {
+    @Test func serverFormRequiresAName() {
+        let message = SettingsValidation.validate(name: "   ",
+                                                  endpoint: "https://s3.example.com:9000",
+                                                  bucket: "video",
+                                                  accessKey: "AK",
+                                                  secretKey: "SK")
+        #expect(message == "Server name is required.")
+    }
+
+    @Test func serverFormWithNameFallsThroughToConnectionChecks() {
+        #expect(SettingsValidation.validate(name: "Production",
+                                            endpoint: "https://s3.example.com:9000",
+                                            bucket: "video",
+                                            accessKey: "AK",
+                                            secretKey: "SK") == nil)
+        let message = SettingsValidation.validate(name: "Production",
+                                                  endpoint: "ftp://s3.example.com",
+                                                  bucket: "video",
+                                                  accessKey: "AK",
+                                                  secretKey: "SK")
+        #expect(message != nil)
+        #expect(message != "Server name is required.")
+    }
+}

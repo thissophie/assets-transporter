@@ -14,7 +14,7 @@ import UIKit
 ///    to nil fields instead of blocking the upload.
 /// 3. **Enqueue**: build the clip key + sidecar, persist a `.waiting`
 ///    `UploadJob` via the shared store.
-/// 4. **Run**: jobs run strictly one at a time through `AppModel.engine`;
+/// 4. **Run**: jobs run strictly one at a time through `ServerSession.engine`;
 ///    `isRunning` guards against interleaved duplicate loops. Staged files are
 ///    deleted after `.done` and kept on `.failed` so `retry` can resume.
 @Observable @MainActor final class IntakeModel {
@@ -95,7 +95,7 @@ import UIKit
                 parts.count > 1 ? String(parts[1]) : "")
     }
 
-    /// Persisted jobs worth re-running when the app becomes configured:
+    /// Persisted jobs worth re-running when the session starts:
     /// `.waiting` and `.uploading` (the engine's `run` resumes both safely —
     /// it recovers server-side part state and restarts dead upload ids).
     /// `.failed` stays for the user's explicit Retry; `.done` has nothing to do.
@@ -157,20 +157,20 @@ import UIKit
 
     /// Stages, probes, and enqueues each file, then drains the queue
     /// sequentially. Fire-and-forget; progress surfaces through `active`.
-    func enqueue(fileURLs: [URL], projectPrefix: String, cameraLabel: String?, app: AppModel) {
+    func enqueue(fileURLs: [URL], projectPrefix: String, cameraLabel: String?, session: ServerSession) {
         guard !fileURLs.isEmpty else { return }
         Task {
             for url in fileURLs {
                 await enqueueOne(url: url, projectPrefix: projectPrefix,
-                                 cameraLabel: cameraLabel, app: app)
+                                 cameraLabel: cameraLabel, session: session)
             }
-            await runQueue(app: app)
+            await runQueue(session: session)
         }
     }
 
     /// Reloads a failed job from the store and re-runs it (the staged file was
     /// kept on failure precisely for this).
-    func retry(jobID: UUID, app: AppModel) {
+    func retry(jobID: UUID, session: ServerSession) {
         // A backoff-scheduled job is already queued: manual Retry means "run
         // it NOW, with fresh automatic attempts", not a second enqueue.
         if notBefore[jobID] != nil {
@@ -187,7 +187,7 @@ import UIKit
         guard Self.shouldEnqueueRetry(jobID: jobID, runningJobID: runningJobID,
                                       pendingIDs: pending.map(\.id), jobState: nil) else { return }
         Task {
-            guard let job = await app.store.load().first(where: { $0.id == jobID }) else {
+            guard let job = await session.store.load().first(where: { $0.id == jobID }) else {
                 lastError = "That upload is no longer in the queue."
                 return
             }
@@ -210,17 +210,17 @@ import UIKit
             }
             autoRetryAttempts[jobID] = nil   // manual retry restarts the count
             pending.append(job)
-            await runQueue(app: app)
+            await runQueue(session: session)
         }
     }
 
     /// Re-runs persisted jobs from a previous session (`.waiting` and
-    /// `.uploading` — see `resumableJobs`). Called when the app becomes
-    /// configured; without this, jobs interrupted by a relaunch would sit in
+    /// `.uploading` — see `resumableJobs`). Called when the server's session
+    /// starts; without this, jobs interrupted by a relaunch would sit in
     /// the store forever, since `pending` is memory-only. Fire-and-forget.
-    func resumePersistedJobs(app: AppModel) {
+    func resumePersistedJobs(session: ServerSession) {
         Task {
-            let stored = await app.store.load()
+            let stored = await session.store.load()
             for job in Self.resumableJobs(from: stored) {
                 // Skip anything this session already tracks.
                 guard runningJobID != job.id,
@@ -236,7 +236,7 @@ import UIKit
                 }
                 pending.append(job)
             }
-            await runQueue(app: app)
+            await runQueue(session: session)
         }
     }
 
@@ -245,7 +245,7 @@ import UIKit
     /// it mid-flight would race the engine's own store updates. Waiting jobs
     /// are pulled out of `pending` synchronously (before any suspension), so
     /// the loop can never start a job that was just removed.
-    func remove(jobID: UUID, app: AppModel) async {
+    func remove(jobID: UUID, session: ServerSession) async {
         guard runningJobID != jobID else {
             lastError = "That upload is running — wait for it to finish or fail first."
             return
@@ -257,8 +257,8 @@ import UIKit
         // Wake a loop sleeping out this job's backoff so it re-scans now.
         backoffSleeper?.cancel()
         do {
-            let stored = await app.store.load().first { $0.id == jobID }
-            try await app.store.remove(jobID: jobID)
+            let stored = await session.store.load().first { $0.id == jobID }
+            try await session.store.remove(jobID: jobID)
             // Only after the store removal is durable: reclaim the staged
             // copy for jobs we staged ourselves (inside our container). Never
             // touch bookmarked sources — those are the user's own files.
@@ -274,7 +274,7 @@ import UIKit
     // MARK: - Internals
 
     private func enqueueOne(url: URL, projectPrefix: String,
-                            cameraLabel: String?, app: AppModel) async {
+                            cameraLabel: String?, session: ServerSession) async {
         let staged: StagedFile
         do {
             // Detached: multi-GB copies must not block the main actor.
@@ -320,7 +320,7 @@ import UIKit
                             totalSize: staged.size,
                             completedParts: [:])
         do {
-            try await app.store.update(job)
+            try await session.store.update(job)
         } catch {
             lastError = "Could not queue \(staged.originalFilename): \(ErrorText.describe(error))"
             try? FileManager.default.removeItem(at: staged.url)
@@ -342,10 +342,11 @@ import UIKit
     /// loop only sleeps when *everything* left is waiting out a backoff, and
     /// that sleep is a separate cancellable task — any nudge (new enqueue,
     /// manual retry, remove, resume) cancels it so fresh work runs immediately.
-    private func runQueue(app: AppModel) async {
+    private func runQueue(session: ServerSession) async {
         // Entering runQueue is the universal nudge: wake a sleeping loop.
         backoffSleeper?.cancel()
-        guard !isRunning, let engine = app.engine else { return }
+        guard !isRunning else { return }
+        let engine = session.engine
         isRunning = true
         defer {
             isRunning = false
@@ -382,7 +383,7 @@ import UIKit
             // Run the STORE's copy, never the queued snapshot: while the job
             // sat in `pending` it may have been Removed (store entry gone) or
             // completed by an earlier loop (.done) — see shouldRunDequeuedJob.
-            let job = await app.store.load().first { $0.id == jobID }
+            let job = await session.store.load().first { $0.id == jobID }
             guard let job, Self.shouldRunDequeuedJob(storedState: job.state) else {
                 active.removeAll { $0.id == jobID }
                 autoRetryAttempts[jobID] = nil

@@ -24,9 +24,11 @@ be felt in real use.
 - [ ] **Enable bucket versioning on the real provider.** The app has no trash;
   deletion is immediate. Versioning was always the intended safety net. (Not
   app work — provider configuration.)
-- [ ] **Re-point Settings at the real endpoint.** The app is currently
-  configured against the local ministack (`localhost:4566` / `it-video`), and
-  a stale `~/WatchDrop` watch config will warn until stopped or re-pointed.
+- [ ] **Check the migrated server after first launch.** The single pre-multi-
+  server settings blob is migrated into a named profile ("<bucket> on <host>")
+  on first launch, along with its queue file and watch config. Rename it, and
+  add the real endpoint as its own server; a stale `~/WatchDrop` watch config
+  on the migrated server will warn until stopped or re-pointed.
 
 ## Features deferred from the plan
 
@@ -62,9 +64,16 @@ be felt in real use.
   watch runs unattended). A per-watch label in the watch setup flow would be
   more predictable — `UI/WatchManager.swift` already persists
   `WatchConfig.cameraLabel`.
-- [ ] **Multi-window macOS support.** `IntakeModel.onClipsChanged` is a
-  single-slot callback and intake state is app-global; a second window on a
-  different project would steal the refresh hook. Fine single-window.
+- [ ] **Two windows on the same server.** Servers each get one window
+  (reopening raises it), so this can't happen from the UI today — but
+  `IntakeModel.onClipsChanged` is still a single-slot callback per server; if
+  per-server multi-window is ever added, make it a set of observers.
+- [ ] **UI-test the multi-window flow on a real ministack.** The XCUITest
+  scenario was rewritten around the "E2E ministack" server (create in the
+  Servers window → double-click to open its window) and compiles, but it needs
+  the ministack + `~/WatchDrop` harness to run; it has not been re-run since.
+- [ ] **iPad multi-scene.** iOS swaps the server list and one server in place
+  (`ContentView`); iPad could open servers as separate scenes like macOS.
 
 ## Hardening / internals
 
