@@ -827,28 +827,36 @@ private struct ClipEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
-                    TextField("Display name", text: $displayName)
-                }
-                Section("Camera") {
-                    TextField("Camera label", text: $cameraLabel)
+                Section {
+                    TextField("Name", text: $displayName, prompt: Text("Clip name"))
+                    TextField("Camera", text: $cameraLabel, prompt: Text("Optional"))
                 }
                 Section("Notes") {
                     TextEditor(text: $notes)
-                        .frame(minHeight: 80)
+                        .font(.body)
+                        .frame(minHeight: 80, maxHeight: 140)
                 }
-                Section("Order") {
-                    Toggle("Use capture time", isOn: $useCaptureTime)
+                Section {
+                    Toggle("Use capture time for ordering", isOn: $useCaptureTime)
                     if !useCaptureTime {
                         DatePicker("Effective time", selection: $orderOverride)
                     }
+                } header: {
+                    Text("Order")
+                } footer: {
+                    Text("Clips sort by capture time unless you set an effective time here.")
                 }
                 if let saveError {
-                    Text(saveError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
+                    Section {
+                        Text(saveError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
+            #if os(macOS)
+            .formStyle(.grouped)
+            #endif
             .navigationTitle("Edit Clip")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -864,7 +872,7 @@ private struct ClipEditSheet: View {
             .onAppear { populateOnce() }
         }
         #if os(macOS)
-        .frame(minWidth: 380, minHeight: 440)
+        .frame(minWidth: 460, minHeight: 400)
         #endif
     }
 
