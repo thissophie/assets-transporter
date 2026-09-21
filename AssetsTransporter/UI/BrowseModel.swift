@@ -23,7 +23,21 @@ import Observation
     /// Set when a refresh fails but cached data is still on screen.
     private(set) var isOffline = false
 
+    /// When false (the default), clients whose manifest marks them hidden are
+    /// filtered out of `visibleClients`.
+    var showHiddenClients = false
+
     private var activeOperations = 0
+
+    /// The clients the list should render: all of them when
+    /// `showHiddenClients` is on, otherwise only the unhidden ones.
+    var visibleClients: [ClientRef] {
+        showHiddenClients ? clients : clients.filter { !$0.isHidden }
+    }
+
+    var hiddenClientCount: Int {
+        clients.count { $0.isHidden }
+    }
 
     func projects(for clientPrefix: String) -> [ProjectRef] {
         projectsByClient[clientPrefix] ?? []
@@ -95,6 +109,14 @@ import Observation
         await mutate {
             try await writer.renameProject(ref, to: name)
             await self.refreshProjects(reader: reader, clientPrefix: clientPrefix)
+        }
+    }
+
+    func setClientHidden(_ ref: ClientRef, hidden: Bool,
+                         writer: BucketWriter, reader: BucketReader) async {
+        await mutate {
+            try await writer.setClientHidden(ref, hidden: hidden)
+            await self.refreshClients(reader: reader)
         }
     }
 

@@ -2,6 +2,9 @@ import Foundation
 
 nonisolated struct ClientManifest: Codable, Equatable, Sendable {
     var displayName: String
+    /// Hidden from the client list by default. Optional so manifests written
+    /// before this field existed still decode; nil means visible.
+    var hidden: Bool? = nil
 }
 
 nonisolated struct ProjectManifest: Codable, Equatable, Sendable {

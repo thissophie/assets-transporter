@@ -90,6 +90,48 @@ struct BucketWriterTests {
         #expect(manifest == ClientManifest(displayName: "Acme Corporation"))
     }
 
+    // 3b. renameClient preserves the hidden flag from the ref.
+    @Test func renameClientPreservesHiddenFlag() async throws {
+        let transport = RecordingTransport(responses: [])
+        let writer = makeWriter(transport: transport)
+        let ref = ClientRef(prefix: "acme-corp-x7f2/", displayName: "Acme Corp", isHidden: true)
+
+        try await writer.renameClient(ref, to: "Acme Corporation")
+
+        let manifest = try decodeBody(ClientManifest.self, from: transport.requests[0])
+        #expect(manifest == ClientManifest(displayName: "Acme Corporation", hidden: true))
+    }
+
+    // MARK: - setClientHidden
+
+    // 3c. setClientHidden rewrites just that client's manifest with the flag,
+    //     preserving the display name. Unhiding writes hidden as an *absent*
+    //     key, restoring the pre-feature manifest shape.
+    @Test func setClientHiddenRewritesManifestPreservingName() async throws {
+        let transport = RecordingTransport(responses: [])
+        let writer = makeWriter(transport: transport)
+        let ref = ClientRef(prefix: "acme-corp-x7f2/", displayName: "Acme Corp")
+
+        try await writer.setClientHidden(ref, hidden: true)
+        try await writer.setClientHidden(ClientRef(prefix: ref.prefix,
+                                                   displayName: ref.displayName,
+                                                   isHidden: true),
+                                         hidden: false)
+
+        let requests = transport.requests
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { $0.request.httpMethod == "PUT" })
+        #expect(requests.allSatisfy { $0.request.url?.path == "/video/acme-corp-x7f2/client.json" })
+
+        let hidden = try decodeBody(ClientManifest.self, from: requests[0])
+        #expect(hidden == ClientManifest(displayName: "Acme Corp", hidden: true))
+
+        let unhidden = try decodeBody(ClientManifest.self, from: requests[1])
+        #expect(unhidden == ClientManifest(displayName: "Acme Corp"))
+        let unhiddenBody = try #require(requests[1].request.httpBody)
+        #expect(!String(decoding: unhiddenBody, as: UTF8.self).contains("hidden"))
+    }
+
     // 4. renameProject changes displayName but preserves sortIndex and createdAt.
     @Test func renameProjectPreservesSortIndexAndCreatedAt() async throws {
         let transport = RecordingTransport(responses: [])

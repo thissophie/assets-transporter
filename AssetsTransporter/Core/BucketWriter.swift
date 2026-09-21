@@ -31,9 +31,20 @@ nonisolated struct BucketWriter: Sendable {
         return ProjectRef(prefix: prefix, manifest: manifest)
     }
 
-    /// Rewrites just this client's manifest with the new display name.
+    /// Rewrites just this client's manifest with the new display name,
+    /// preserving the hidden flag.
     func renameClient(_ ref: ClientRef, to name: String) async throws {
-        try await putManifest(ClientManifest(displayName: name),
+        try await putManifest(ClientManifest(displayName: name,
+                                             hidden: ref.isHidden ? true : nil),
+                              key: ref.prefix + "client.json")
+    }
+
+    /// Rewrites just this client's manifest with the new hidden flag,
+    /// preserving the display name. Visible is written as an absent key so
+    /// unhiding restores the pre-feature manifest shape.
+    func setClientHidden(_ ref: ClientRef, hidden: Bool) async throws {
+        try await putManifest(ClientManifest(displayName: ref.displayName,
+                                             hidden: hidden ? true : nil),
                               key: ref.prefix + "client.json")
     }
 

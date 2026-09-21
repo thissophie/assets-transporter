@@ -4,6 +4,7 @@ import Foundation
 nonisolated struct ClientRef: Equatable, Sendable, Identifiable {
     var prefix: String        // "acme-corp-x7f2/" (always trailing slash)
     var displayName: String
+    var isHidden: Bool = false
     var id: String { prefix }
 }
 
@@ -27,7 +28,8 @@ nonisolated struct BucketReader: Sendable {
         let refs = await mapConcurrently(listing.commonPrefixes) { prefix in
             let manifest = await fetchManifest(ClientManifest.self, key: prefix + "client.json")
             return ClientRef(prefix: prefix,
-                             displayName: manifest?.displayName ?? Self.strippingTrailingSlash(prefix))
+                             displayName: manifest?.displayName ?? Self.strippingTrailingSlash(prefix),
+                             isHidden: manifest?.hidden ?? false)
         }
         return refs.sorted { a, b in
             switch a.displayName.caseInsensitiveCompare(b.displayName) {

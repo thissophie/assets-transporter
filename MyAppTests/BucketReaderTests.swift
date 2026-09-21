@@ -38,6 +38,32 @@ struct BucketReaderTests {
         ])
     }
 
+    // 1b. hidden: true in client.json surfaces as isHidden; an absent key
+    //     (pre-feature manifest) means visible.
+    @Test func listClientsReadsHiddenFlag() async throws {
+        let listXML = """
+        <ListBucketResult>
+          <IsTruncated>false</IsTruncated>
+          <CommonPrefixes><Prefix>acme-corp-x7f2/</Prefix></CommonPrefixes>
+          <CommonPrefixes><Prefix>beta-films-q2w3/</Prefix></CommonPrefixes>
+        </ListBucketResult>
+        """
+        let transport = RecordingTransport(responses: [])
+        transport.respond(to: "list-type=2", with: (Data(listXML.utf8), 200))
+        transport.respond(to: "acme-corp-x7f2/client.json",
+                          with: (Data(#"{"displayName":"Acme Corp","hidden":true}"#.utf8), 200))
+        transport.respond(to: "beta-films-q2w3/client.json",
+                          with: (Data(#"{"displayName":"Beta Films"}"#.utf8), 200))
+        let reader = makeReader(transport: transport)
+
+        let clients = try await reader.listClients()
+
+        #expect(clients == [
+            ClientRef(prefix: "acme-corp-x7f2/", displayName: "Acme Corp", isHidden: true),
+            ClientRef(prefix: "beta-films-q2w3/", displayName: "Beta Films", isHidden: false),
+        ])
+    }
+
     // MARK: - listProjects
 
     // 2. Order: (sortIndex ?? Int.max) ascending, then createdAt, then displayName.

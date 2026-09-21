@@ -182,12 +182,15 @@ struct ClientListView: View {
             }
         } else {
             List(selection: $selection) {
-                ForEach(browse.clients) { client in
+                ForEach(browse.visibleClients) { client in
                     BrowseRow(title: client.displayName, subtitle: nil,
                               isBusy: previewingID == client.id)
+                        .opacity(client.isHidden ? 0.5 : 1)
                         .tag(client.id)
                         .contextMenu {
                             Button("Rename") { beginRename(client) }
+                                .disabled(browse.isMutating)
+                            Button(client.isHidden ? "Unhide" : "Hide") { toggleHidden(client) }
                                 .disabled(browse.isMutating)
                             Button("Delete…", role: .destructive) { beginDelete(client) }
                                 .disabled(deletionDisabled)
@@ -199,8 +202,39 @@ struct ClientListView: View {
                                 .disabled(browse.isMutating)
                         }
                 }
+                if browse.hiddenClientCount > 0 {
+                    Button(browse.showHiddenClients
+                           ? "Hide Hidden Clients"
+                           : "Show ^[\(browse.hiddenClientCount) Hidden Client](inflect: true)") {
+                        browse.showHiddenClients.toggle()
+                        // Collapsing the hidden rows shouldn't leave one
+                        // invisibly selected.
+                        if !browse.showHiddenClients, isSelectionHidden {
+                            selection = nil
+                        }
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.borderless)
+                }
             }
             .refreshable { await refresh() }
+        }
+    }
+
+    private var isSelectionHidden: Bool {
+        browse.clients.contains { $0.id == selection && $0.isHidden }
+    }
+
+    private func toggleHidden(_ client: ClientRef) {
+        Task {
+            await browse.setClientHidden(client, hidden: !client.isHidden,
+                                         writer: session.writer, reader: session.reader)
+            // Hiding the selected client removes its row (unless hidden rows
+            // are shown), so drop the selection with it.
+            if !browse.showHiddenClients, isSelectionHidden {
+                selection = nil
+            }
         }
     }
 
