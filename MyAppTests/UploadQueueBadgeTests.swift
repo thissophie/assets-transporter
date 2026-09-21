@@ -3,8 +3,10 @@ import Testing
 @testable import MyApp
 
 /// Pins the queue screen's state → badge text mapping (one case per
-/// `UploadJob.State`). The live "%" suffix for uploading rows is view-level
-/// and not part of this mapping.
+/// `UploadJob.State`). The live "%" suffix for uploading rows and the
+/// "Retrying in Xs (attempt N/4)" countdown line (driven by
+/// `ActiveUpload.nextAutoRetry`, live-updated via `Text(_, style: .timer)`)
+/// are view-level additions, not part of this mapping.
 struct UploadQueueBadgeTests {
     @Test func waitingBadge() {
         #expect(UploadJob.State.waiting.badgeText == "Waiting")

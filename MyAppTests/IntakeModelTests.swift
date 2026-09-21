@@ -110,6 +110,28 @@ struct IntakeModelTests {
         #expect(resumable.map(\.id) == [waiting.id, uploading.id])
     }
 
+    // MARK: - Automatic-retry backoff schedule
+    //
+    // Attempts are 1-based; nil means automatic attempts are exhausted and
+    // the job stays .failed for manual Retry. Counts live in memory only.
+
+    @Test func autoRetryScheduleIsExponentialAndCapped() {
+        #expect(IntakeModel.autoRetryDelay(attempt: 1) == 5)
+        #expect(IntakeModel.autoRetryDelay(attempt: 2) == 15)
+        #expect(IntakeModel.autoRetryDelay(attempt: 3) == 60)
+        #expect(IntakeModel.autoRetryDelay(attempt: 4) == 300)
+        #expect(IntakeModel.autoRetryDelay(attempt: 5) == nil)
+    }
+
+    @Test func autoRetryDelayRejectsNonPositiveAttempts() {
+        #expect(IntakeModel.autoRetryDelay(attempt: 0) == nil)
+        #expect(IntakeModel.autoRetryDelay(attempt: -1) == nil)
+    }
+
+    @Test func maxAutoRetriesMatchesScheduleLength() {
+        #expect(IntakeModel.maxAutoRetries == 4)
+    }
+
     // MARK: - shouldRunDequeuedJob
     //
     // `runQueue` reloads each dequeued job from the store before running it;

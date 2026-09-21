@@ -23,6 +23,11 @@ nonisolated struct UploadJob: Codable, Equatable, Sendable, Identifiable {
     /// parts or call complete again (the upload id is gone server-side).
     var multipartCompleted: Bool = false
     var state: State
+    /// Whether the most recent failure looked transient (network drop, 5xx,
+    /// timeout) — set by the engine whenever it records `.failed`, read by
+    /// `IntakeModel` to decide automatic retry. nil until a failure occurs
+    /// (and in records persisted before the field existed).
+    var lastFailureRetryable: Bool? = nil
     var partSize: Int64
     var totalSize: Int64
     var completedParts: [Int: String]  // partNumber -> ETag
@@ -30,7 +35,7 @@ nonisolated struct UploadJob: Codable, Equatable, Sendable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, sourceURL, sourceBookmark, clipKey, sidecar
         case uploadId, multipartCompleted
-        case state, partSize, totalSize, completedParts
+        case state, lastFailureRetryable, partSize, totalSize, completedParts
     }
 }
 
@@ -49,6 +54,7 @@ extension UploadJob {
         uploadId = try container.decodeIfPresent(String.self, forKey: .uploadId)
         multipartCompleted = try container.decodeIfPresent(Bool.self, forKey: .multipartCompleted) ?? false
         state = try container.decode(State.self, forKey: .state)
+        lastFailureRetryable = try container.decodeIfPresent(Bool.self, forKey: .lastFailureRetryable)
         partSize = try container.decode(Int64.self, forKey: .partSize)
         totalSize = try container.decode(Int64.self, forKey: .totalSize)
         completedParts = try container.decode([Int: String].self, forKey: .completedParts)

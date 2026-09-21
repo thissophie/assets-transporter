@@ -18,6 +18,13 @@ import UIKit
 ///    `isRunning` guards against interleaved duplicate loops. Staged files are
 ///    deleted after `.done` and kept on `.failed` so `retry` can resume.
 @Observable @MainActor final class IntakeModel {
+    /// A scheduled automatic retry: when it will run and which attempt
+    /// (1-based, of `maxAutoRetries`) it will be.
+    nonisolated struct AutoRetrySchedule: Equatable, Sendable {
+        var at: Date
+        var attempt: Int
+    }
+
     struct ActiveUpload: Identifiable, Equatable {
         let id: UUID
         var displayName: String
@@ -27,6 +34,9 @@ import UIKit
         var clipKey: String
         /// Local staged copy, used for row thumbnails while it exists.
         var stagedURL: URL?
+        /// Set while a failed job waits out its automatic-retry backoff;
+        /// rows render it as "Retrying in Xs (attempt N/4)".
+        var nextAutoRetry: AutoRetrySchedule? = nil
     }
 
     private(set) var active: [ActiveUpload] = []
@@ -43,6 +53,14 @@ import UIKit
     private var isRunning = false
     /// Read externally by the queue screen to hide Remove on the running row.
     private(set) var runningJobID: UUID?
+    /// Earliest run time per backoff-scheduled job id (absent = run now).
+    private var notBefore: [UUID: Date] = [:]
+    /// Automatic-retry attempts used per job id, THIS SESSION ONLY (never
+    /// persisted — a fresh launch gets fresh attempts; manual Retry resets).
+    private var autoRetryAttempts: [UUID: Int] = [:]
+    /// The loop's cancellable backoff sleep — cancelled by any nudge
+    /// (enqueue / retry / remove / resume) so fresh work never waits it out.
+    private var backoffSleeper: Task<Void, Never>?
 
     // MARK: - Locations
 
@@ -97,6 +115,22 @@ import UIKit
         return files.filter { !referenced.contains($0.standardizedFileURL.path) }
     }
 
+    /// Automatic-retry backoff schedule, in seconds. Roughly exponential and
+    /// deliberately short: transient failures (network blips, 5xx) usually
+    /// clear quickly, and after the last delay the job stays `.failed` for
+    /// manual Retry.
+    nonisolated static let autoRetrySchedule: [TimeInterval] = [5, 15, 60, 300]
+
+    /// Maximum automatic retries per job per session.
+    nonisolated static var maxAutoRetries: Int { autoRetrySchedule.count }
+
+    /// Delay before automatic retry number `attempt` (1-based); nil when
+    /// attempts are exhausted (or the attempt number is nonsense).
+    nonisolated static func autoRetryDelay(attempt: Int) -> TimeInterval? {
+        guard attempt >= 1, attempt <= autoRetrySchedule.count else { return nil }
+        return autoRetrySchedule[attempt - 1]
+    }
+
     /// Whether a dequeued job may run, given its freshly-loaded store state:
     /// absent (Removed while it sat in `pending`) or `.done` (finished by an
     /// earlier run) means skip — running the queued snapshot instead could
@@ -137,6 +171,19 @@ import UIKit
     /// Reloads a failed job from the store and re-runs it (the staged file was
     /// kept on failure precisely for this).
     func retry(jobID: UUID, app: AppModel) {
+        // A backoff-scheduled job is already queued: manual Retry means "run
+        // it NOW, with fresh automatic attempts", not a second enqueue.
+        if notBefore[jobID] != nil {
+            notBefore[jobID] = nil
+            autoRetryAttempts[jobID] = nil
+            if let index = active.firstIndex(where: { $0.id == jobID }) {
+                active[index].state = .waiting
+                active[index].progress = 0
+                active[index].nextAutoRetry = nil
+            }
+            backoffSleeper?.cancel()
+            return
+        }
         guard Self.shouldEnqueueRetry(jobID: jobID, runningJobID: runningJobID,
                                       pendingIDs: pending.map(\.id), jobState: nil) else { return }
         Task {
@@ -155,11 +202,13 @@ import UIKit
             if let index = active.firstIndex(where: { $0.id == jobID }) {
                 active[index].state = .waiting
                 active[index].progress = 0
+                active[index].nextAutoRetry = nil
             } else {
                 active.append(ActiveUpload(id: job.id, displayName: job.sidecar.displayName,
                                            progress: 0, state: .waiting,
                                            clipKey: job.clipKey, stagedURL: job.sourceURL))
             }
+            autoRetryAttempts[jobID] = nil   // manual retry restarts the count
             pending.append(job)
             await runQueue(app: app)
         }
@@ -203,6 +252,10 @@ import UIKit
         }
         pending.removeAll { $0.id == jobID }
         active.removeAll { $0.id == jobID }
+        notBefore[jobID] = nil
+        autoRetryAttempts[jobID] = nil
+        // Wake a loop sleeping out this job's backoff so it re-scans now.
+        backoffSleeper?.cancel()
         do {
             let stored = await app.store.load().first { $0.id == jobID }
             try await app.store.remove(jobID: jobID)
@@ -282,7 +335,16 @@ import UIKit
     /// Drains `pending` one job at a time. The `isRunning` guard means at most
     /// one loop exists; late enqueues append to `pending` and are picked up by
     /// the live loop.
+    ///
+    /// Backoff design (documented choice): a failed-but-retryable job goes to
+    /// the BACK of the queue with a not-before time rather than sleeping the
+    /// loop, so other queued jobs are never blocked by one job's backoff. The
+    /// loop only sleeps when *everything* left is waiting out a backoff, and
+    /// that sleep is a separate cancellable task — any nudge (new enqueue,
+    /// manual retry, remove, resume) cancels it so fresh work runs immediately.
     private func runQueue(app: AppModel) async {
+        // Entering runQueue is the universal nudge: wake a sleeping loop.
+        backoffSleeper?.cancel()
         guard !isRunning, let engine = app.engine else { return }
         isRunning = true
         defer {
@@ -290,8 +352,30 @@ import UIKit
             runningJobID = nil
         }
         while !pending.isEmpty {
-            let queued = pending.removeFirst()
+            // Next runnable job: first whose backoff (if any) has elapsed.
+            let now = Date()
+            guard let index = pending.firstIndex(where: {
+                (notBefore[$0.id] ?? .distantPast) <= now
+            }) else {
+                // Only backoff-pending work remains: sleep until the earliest
+                // not-before, then re-scan. (0.1s floor avoids a hot loop when
+                // the deadline lands between the check and the sleep.)
+                let earliest = pending.compactMap { notBefore[$0.id] }.min() ?? now
+                let sleeper = Task {
+                    do {
+                        try await Task.sleep(for: .seconds(max(earliest.timeIntervalSinceNow, 0.1)))
+                    } catch {
+                        // Cancelled by a nudge — just wake and re-scan.
+                    }
+                }
+                backoffSleeper = sleeper
+                await sleeper.value
+                backoffSleeper = nil
+                continue
+            }
+            let queued = pending.remove(at: index)
             let jobID = queued.id
+            notBefore[jobID] = nil
             // Claim the id BEFORE the store-load suspension so remove() and
             // retry() treat the job as running for this whole iteration.
             runningJobID = jobID
@@ -301,11 +385,13 @@ import UIKit
             let job = await app.store.load().first { $0.id == jobID }
             guard let job, Self.shouldRunDequeuedJob(storedState: job.state) else {
                 active.removeAll { $0.id == jobID }
+                autoRetryAttempts[jobID] = nil
                 runningJobID = nil
                 continue
             }
             if let index = active.firstIndex(where: { $0.id == jobID }) {
                 active[index].state = .uploading(uploadId: job.uploadId ?? "")
+                active[index].nextAutoRetry = nil
             }
             // The running loop is a method on self, so self necessarily
             // outlives the progress callbacks — a strong capture is fine.
@@ -321,11 +407,33 @@ import UIKit
                 active[index].progress = finished.state == .done ? 1 : active[index].progress
             }
             if finished.state == .done {
+                autoRetryAttempts[jobID] = nil
                 // Staged copy no longer needed; failed jobs keep theirs for retry.
                 try? FileManager.default.removeItem(at: finished.sourceURL)
                 active.removeAll { $0.id == jobID }
                 onClipsChanged?()
+            } else if case .failed = finished.state {
+                scheduleAutoRetryIfEligible(finished)
             }
+            runningJobID = nil
+        }
+    }
+
+    /// Requeues a failed job for an automatic retry when the engine judged
+    /// the failure transient (`lastFailureRetryable`) and session attempts
+    /// remain; otherwise the job stays `.failed` for manual Retry (which
+    /// resets the attempt count). Attempt counts are memory-only by design —
+    /// a fresh launch gets fresh attempts.
+    private func scheduleAutoRetryIfEligible(_ job: UploadJob) {
+        let attempt = (autoRetryAttempts[job.id] ?? 0) + 1
+        guard job.lastFailureRetryable == true,
+              let delay = Self.autoRetryDelay(attempt: attempt) else { return }
+        autoRetryAttempts[job.id] = attempt
+        let at = Date().addingTimeInterval(delay)
+        notBefore[job.id] = at
+        pending.append(job)
+        if let index = active.firstIndex(where: { $0.id == job.id }) {
+            active[index].nextAutoRetry = AutoRetrySchedule(at: at, attempt: attempt)
         }
     }
 

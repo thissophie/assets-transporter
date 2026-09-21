@@ -66,9 +66,11 @@ struct UploadQueueView: View {
                                    description: Text("Clips you add appear here while they upload."))
         } else {
             List(jobs) { job in
+                let live = app.intake.active.first { $0.id == job.id }
                 UploadQueueRow(job: job,
                                liveProgress: liveProgress(for: job),
                                isRunning: job.id == app.intake.runningJobID,
+                               nextAutoRetry: live?.nextAutoRetry,
                                onRetry: { app.intake.retry(jobID: job.id, app: app) },
                                onRemove: { remove(job) })
             }
@@ -135,6 +137,7 @@ private struct UploadQueueRow: View {
     var job: UploadJob
     var liveProgress: Double?
     var isRunning: Bool
+    var nextAutoRetry: IntakeModel.AutoRetrySchedule?
     var onRetry: () -> Void
     var onRemove: () -> Void
 
@@ -153,6 +156,13 @@ private struct UploadQueueRow: View {
                     Text(job.totalSize, format: .byteCount(style: .file))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                if let retry = nextAutoRetry {
+                    // Text(_, style: .timer) live-updates the countdown.
+                    Text("Retrying in \(Text(retry.at, style: .timer)) (attempt \(retry.attempt)/\(IntakeModel.maxAutoRetries))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
                 }
             }
             Spacer()

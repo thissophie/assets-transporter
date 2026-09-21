@@ -752,6 +752,13 @@ private struct ActiveUploadRow: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .lineLimit(2)
+                    if let retry = upload.nextAutoRetry {
+                        // Text(_, style: .timer) live-updates the countdown.
+                        Text("Retrying in \(Text(retry.at, style: .timer)) (attempt \(retry.attempt)/\(IntakeModel.maxAutoRetries))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
                 case .done:
                     Label("Uploaded", systemImage: "checkmark.circle")
                         .font(.caption)

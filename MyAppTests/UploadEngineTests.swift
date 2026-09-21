@@ -399,6 +399,51 @@ struct UploadEngineTests {
         }
     }
 
+    // MARK: - 6b. Retryability classification
+    //
+    // Drives IntakeModel's automatic retry: transient shapes (network drops,
+    // timeouts, 5xx, 429) retry; permanent ones (other 4xx, local file
+    // problems, bookmark/file-system failures, cancellation) do not.
+
+    @Test func retryabilityClassification() {
+        #expect(UploadEngine.isRetryable(URLError(.timedOut)))
+        #expect(UploadEngine.isRetryable(URLError(.networkConnectionLost)))
+        #expect(UploadEngine.isRetryable(URLError(.notConnectedToInternet)))
+        #expect(!UploadEngine.isRetryable(URLError(.cancelled)))
+        #expect(UploadEngine.isRetryable(S3Error.http(status: 500, body: "")))
+        #expect(UploadEngine.isRetryable(S3Error.http(status: 503, body: "")))
+        #expect(UploadEngine.isRetryable(S3Error.http(status: 429, body: "")))
+        #expect(!UploadEngine.isRetryable(S3Error.http(status: 400, body: "")))
+        #expect(!UploadEngine.isRetryable(S3Error.http(status: 403, body: "")))
+        #expect(!UploadEngine.isRetryable(S3Error.http(status: 404, body: "")))
+        #expect(!UploadEngine.isRetryable(UploadEngineError.sourceTruncated(expected: 1, got: 0)))
+        #expect(!UploadEngine.isRetryable(UploadEngineError.invalidPartSize(0)))
+        #expect(!UploadEngine.isRetryable(CocoaError(.fileReadNoSuchFile)))
+        #expect(!UploadEngine.isRetryable(CancellationError()))
+    }
+
+    // A failed run persists the classification on the job so IntakeModel can
+    // decide automatic retry from the returned record alone.
+    @Test func failedRunRecordsRetryability() async throws {
+        let (sourceURL, _) = try makeSource(bytes: 300)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let transport = RecordingTransport(status: 500, data: Data("boom".utf8))
+        let store = makeStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let engine = makeEngine(transport: transport, store: store)
+
+        let result = await engine.run(job: makeJob(sourceURL: sourceURL))
+
+        guard case .failed = result.state else {
+            Issue.record("expected .failed, got \(result.state)")
+            return
+        }
+        #expect(result.lastFailureRetryable == true)
+        // And the persisted record carries it too.
+        let persisted = await store.load().first { $0.id == result.id }
+        #expect(persisted?.lastFailureRetryable == true)
+    }
+
     // MARK: - 7. Done job is a no-op
 
     @Test func doneJobReturnsUnchangedWithZeroRequests() async throws {

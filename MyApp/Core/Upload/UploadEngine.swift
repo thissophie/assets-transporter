@@ -192,8 +192,26 @@ actor UploadEngine {
             return job
         } catch {
             job.state = .failed(message: Self.message(for: error))
+            job.lastFailureRetryable = Self.isRetryable(error)
             try? await store.update(job)
             return job
+        }
+    }
+
+    /// Whether a run failure looked transient — worth an automatic retry.
+    /// Transient: network-shaped URL errors, HTTP 5xx, and 429 (throttling).
+    /// Permanent: other 4xx (auth/config — the 404 recovery paths are already
+    /// handled inside `run`), local file problems (`UploadEngineError`),
+    /// bookmark/file-system failures (`CocoaError`), and cancellation.
+    /// Unknown errors default to non-retryable so a broken job can't loop.
+    nonisolated static func isRetryable(_ error: any Error) -> Bool {
+        switch error {
+        case let urlError as URLError:
+            return urlError.code != .cancelled
+        case S3Error.http(let status, _):
+            return status >= 500 || status == 429
+        default:
+            return false
         }
     }
 
@@ -237,6 +255,7 @@ actor UploadEngine {
                                    data: ManifestCoding.encode(job.sidecar),
                                    contentType: "application/json")
         job.state = .done
+        job.lastFailureRetryable = nil   // stale hint from an earlier failure
         try await store.update(job)
     }
 
