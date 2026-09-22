@@ -26,6 +26,9 @@ struct ProjectDetailView: View {
     @State private var clips: [Clip] = []
     @State private var selection = Set<Clip.ID>()
     @State private var isLoading = false
+    /// Bumped by every `refresh()`; a fetch only publishes if it is still the
+    /// newest one (its own fetch task is deliberately never cancelled).
+    @State private var refreshGeneration = 0
     @State private var loadError: String?
     @State private var editingClip: Clip?
     @State private var playingClip: Clip?
@@ -605,15 +608,28 @@ struct ProjectDetailView: View {
 
     private func refresh() async {
         let reader = session.reader
+        let prefix = project.prefix
+        refreshGeneration += 1
+        let generation = refreshGeneration
         isLoading = true
         defer { isLoading = false }
         do {
-            clips = try await reader.listClips(projectPrefix: project.prefix)
+            // The fetch runs as an unstructured task because on iPhone the
+            // collapsed NavigationSplitView sends a re-pushed detail view a
+            // spurious onDisappear mid-transition (with no matching reappear),
+            // cancelling the surrounding .task. A structured fetch dies with
+            // it and nothing ever retries, so the visible view sits on
+            // "No clips yet". The unstructured fetch survives that bogus
+            // cancellation; the generation guard drops any result a newer
+            // refresh (project switch, reload) has superseded.
+            let fetched = try await Task { try await reader.listClips(projectPrefix: prefix) }.value
+            guard generation == refreshGeneration else { return }
+            clips = fetched
             // Drop selected ids that no longer exist (deleted here or elsewhere).
             selection.formIntersection(Set(clips.map(\.id)))
             loadError = nil
         } catch {
-            // A refresh cancelled by view teardown / project switch is not a failure.
+            guard generation == refreshGeneration else { return }
             if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
             loadError = "Could not load clips: \(ErrorText.describe(error))"
         }
