@@ -3,6 +3,9 @@ import Foundation
 nonisolated struct Clip: Equatable, Sendable, Identifiable {
     var key: String            // full object key of the video file
     var sidecar: ClipSidecar
+    /// True when a `.thumb.jpg` poster frame exists alongside the clip
+    /// (uploads made before the thumbnail feature don't have one).
+    var hasThumbnail: Bool = false
     var id: String { key }
 
     /// override > capturedAt > timestamp parsed from the key > distantPast

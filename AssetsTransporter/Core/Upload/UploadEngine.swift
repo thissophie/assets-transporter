@@ -73,7 +73,9 @@ actor UploadEngine {
             // upload id no longer exists server-side, and the source file is
             // no longer needed.
             if job.multipartCompleted {
-                try await finish(&job)
+                // No bookmark resolution here: staged copies (the normal case)
+                // are in our container, and the thumbnail is best effort anyway.
+                try await finish(&job, sourceURL: job.sourceURL)
                 return job
             }
 
@@ -188,7 +190,7 @@ actor UploadEngine {
             job.multipartCompleted = true
             try await store.update(job)
 
-            try await finish(&job)
+            try await finish(&job, sourceURL: sourceURL)
             return job
         } catch {
             job.state = .failed(message: Self.message(for: error))
@@ -249,8 +251,16 @@ actor UploadEngine {
 
     // MARK: - Helpers
 
-    /// Sidecar PUT — strictly after multipart completion — then `.done`.
-    private func finish(_ job: inout UploadJob) async throws {
+    /// Thumbnail PUT (best effort), then sidecar PUT — both strictly after
+    /// multipart completion — then `.done`. The thumbnail goes first so a clip
+    /// never "exists" (sidecar present) without its thumbnail already in
+    /// place; but it never blocks the sidecar — a generation or PUT failure
+    /// just leaves the clip without one.
+    private func finish(_ job: inout UploadJob, sourceURL: URL) async throws {
+        if let jpeg = await ClipThumbnailer.jpegData(for: sourceURL) {
+            try? await client.putObject(key: BucketKeys.thumbnailKey(forClipKey: job.clipKey),
+                                        data: jpeg, contentType: "image/jpeg")
+        }
         try await client.putObject(key: BucketKeys.sidecarKey(forClipKey: job.clipKey),
                                    data: ManifestCoding.encode(job.sidecar),
                                    contentType: "application/json")

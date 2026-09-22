@@ -17,6 +17,8 @@ struct BucketKeyTests {
         #expect(key == "acme-corp-x7f2/spring-gala-k9q1/clips/2026-09-19_183042_cam-a_e51f.mov")
         #expect(BucketKeys.sidecarKey(forClipKey: key) ==
                 "acme-corp-x7f2/spring-gala-k9q1/clips/2026-09-19_183042_cam-a_e51f.mov.json")
+        #expect(BucketKeys.thumbnailKey(forClipKey: key) ==
+                "acme-corp-x7f2/spring-gala-k9q1/clips/2026-09-19_183042_cam-a_e51f.mov.thumb.jpg")
     }
 
     @Test func manifestKeys() {
@@ -25,9 +27,10 @@ struct BucketKeyTests {
                 == "acme-corp-x7f2/spring-gala-k9q1/project.json")
     }
 
-    @Test func isClipKeyDistinguishesSidecars() {
+    @Test func isClipKeyDistinguishesSidecarsAndThumbnails() {
         #expect(BucketKeys.isClipFile("a/b/clips/x.mov"))
         #expect(!BucketKeys.isClipFile("a/b/clips/x.mov.json"))
+        #expect(!BucketKeys.isClipFile("a/b/clips/x.mov.thumb.jpg"))
     }
 
     @Test func clipKeyNormalizesInputs() {

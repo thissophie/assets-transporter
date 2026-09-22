@@ -1,15 +1,16 @@
 import AVFoundation
 import AVKit
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
 /// Project detail (Task 5.3): the project's clip list plus clip intake.
 ///
-/// Clips are *remote* objects — there is no local file to thumbnail, and a
-/// real remote thumbnail would need ranged GETs against the object (out of
-/// scope here), so stored clips show a static video icon. Only active uploads,
-/// which still have a local staged copy, get a real thumbnail frame.
+/// Thumbnails: active uploads still have a local staged copy, so their rows
+/// generate a frame from it. Stored clips show the `.thumb.jpg` poster frame
+/// the upload wrote alongside the clip (see `ClipThumbnailer`); clips without
+/// one (pre-feature uploads, generation failures) fall back to a static icon.
 ///
 /// Intake sources: iOS PhotosPicker + Files (fileImporter); macOS fileImporter
 /// + drag-and-drop of files/folders (folders expand one level to video files).
@@ -773,15 +774,18 @@ nonisolated private struct IntakeMovie: Transferable {
 
 // MARK: - Rows
 
-/// One stored (remote) clip. Static video icon — see `ProjectDetailView` doc
-/// comment for why remote clips don't get real thumbnails in this task.
+/// One stored (remote) clip: the stored poster frame when the upload wrote
+/// one (`clip.hasThumbnail`), a static video icon otherwise.
 /// Internal (not file-private) so tests can pin `formatDuration`.
 struct ClipRow: View {
     var clip: Clip
 
     var body: some View {
         HStack(spacing: 12) {
-            ClipThumbnail(stagedURL: nil)
+            ClipThumbnail(stagedURL: nil,
+                          remoteKey: clip.hasThumbnail
+                              ? BucketKeys.thumbnailKey(forClipKey: clip.key)
+                              : nil)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(clip.sidecar.displayName)
@@ -877,9 +881,13 @@ private struct ActiveUploadRow: View {
 }
 
 /// Leading row image. With a local staged file, generates a real frame via
-/// AVAssetImageGenerator's async API; otherwise a static placeholder icon.
+/// AVAssetImageGenerator's async API; with a remote key, fetches the stored
+/// `.thumb.jpg` poster frame (cached for the session); otherwise a static
+/// placeholder icon.
 private struct ClipThumbnail: View {
     var stagedURL: URL?
+    var remoteKey: String? = nil
+    @Environment(ServerSession.self) private var session
     @State private var thumbnail: CGImage?
 
     var body: some View {
@@ -897,13 +905,40 @@ private struct ClipThumbnail: View {
         }
         .frame(width: 56, height: 36)
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .task(id: stagedURL) {
-            guard thumbnail == nil, let stagedURL else { return }
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: stagedURL))
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 240, height: 240)
-            thumbnail = try? await generator.image(at: .zero).image
+        .task(id: stagedURL?.absoluteString ?? remoteKey) {
+            guard thumbnail == nil else { return }
+            if let stagedURL {
+                let generator = AVAssetImageGenerator(asset: AVURLAsset(url: stagedURL))
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 240, height: 240)
+                thumbnail = try? await generator.image(at: .zero).image
+            } else if let remoteKey {
+                thumbnail = await RemoteThumbnailCache.image(key: remoteKey,
+                                                             client: session.client)
+            }
         }
+    }
+}
+
+/// Session-wide cache of fetched clip thumbnails so refreshes (after every
+/// upload) and scrolling don't refetch the same small JPEGs. Keyed by
+/// endpoint + bucket + object key, since sessions for different servers share
+/// this cache. Best effort: fetch or decode failures cache nothing and the
+/// row keeps its placeholder icon.
+@MainActor private enum RemoteThumbnailCache {
+    private static var images: [String: CGImage] = [:]
+
+    static func image(key: String, client: S3Client) async -> CGImage? {
+        let cacheKey = "\(client.config.endpoint)|\(client.config.bucket)|\(key)"
+        if let cached = images[cacheKey] { return cached }
+        guard let data = try? await client.getObject(key: key),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        // Thumbnails are ~320 px, so entries are small; the crude cap just
+        // keeps a very large library from growing the cache without bound.
+        if images.count >= 512 { images.removeAll() }
+        images[cacheKey] = image
+        return image
     }
 }
 

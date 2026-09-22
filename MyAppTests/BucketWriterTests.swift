@@ -338,21 +338,23 @@ struct BucketWriterTests {
         #expect(!deletePaths.contains { $0.hasSuffix(".mov.json") })
     }
 
-    // 9. deleteClip deletes the file then its sidecar; a 404 on the sidecar
-    //    delete is tolerated (the sidecar may not exist).
-    @Test func deleteClipDeletesFileAndSidecarToleratingMissingSidecar() async throws {
+    // 9. deleteClip deletes the file, then its sidecar, then its thumbnail; a
+    //    404 on the sidecar or thumbnail delete is tolerated (either may not exist).
+    @Test func deleteClipDeletesFileSidecarAndThumbnailToleratingMissing() async throws {
         let clipKey = Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov"
         let transport = RecordingTransport(responses: [])
         transport.respond(to: ".mov.json", with: (Data("no such key".utf8), 404))
+        transport.respond(to: ".mov.thumb.jpg", with: (Data("no such key".utf8), 404))
         let writer = makeWriter(transport: transport)
 
         try await writer.deleteClip(makeClip(key: clipKey))
 
         let requests = transport.requests
-        #expect(requests.count == 2)
+        #expect(requests.count == 3)
         #expect(requests.allSatisfy { $0.request.httpMethod == "DELETE" })
         #expect(requests[0].request.url?.path == "/video/\(clipKey)")
         #expect(requests[1].request.url?.path == "/video/\(clipKey).json")
+        #expect(requests[2].request.url?.path == "/video/\(clipKey).thumb.jpg")
     }
 
     // 10. A 404 on the FILE delete propagates (and the sidecar delete never runs).
@@ -368,7 +370,7 @@ struct BucketWriterTests {
         #expect(transport.requests.count == 1)
     }
 
-    // 10b. deleteClips deletes each clip (file then sidecar) in order.
+    // 10b. deleteClips deletes each clip (file, sidecar, thumbnail) in order.
     @Test func deleteClipsDeletesEachClipInOrder() async throws {
         let keys = [
             Self.projectPrefix + "clips/2026-03-01_120000_cama_abc1.mov",
@@ -380,13 +382,15 @@ struct BucketWriterTests {
         try await writer.deleteClips(keys.map(makeClip))
 
         let requests = transport.requests
-        #expect(requests.count == 4)
+        #expect(requests.count == 6)
         #expect(requests.allSatisfy { $0.request.httpMethod == "DELETE" })
         #expect(requests.map(\.request.url?.path) == [
             "/video/\(keys[0])",
             "/video/\(keys[0]).json",
+            "/video/\(keys[0]).thumb.jpg",
             "/video/\(keys[1])",
             "/video/\(keys[1]).json",
+            "/video/\(keys[1]).thumb.jpg",
         ])
     }
 

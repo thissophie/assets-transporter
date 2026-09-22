@@ -79,7 +79,10 @@ nonisolated struct BucketReader: Sendable {
             let sidecar = allKeys.contains(sidecarKey)
                 ? await fetchManifest(ClipSidecar.self, key: sidecarKey)
                 : nil
-            return Clip(key: object.key, sidecar: sidecar ?? Self.fallbackSidecar(for: object))
+            return Clip(key: object.key,
+                        sidecar: sidecar ?? Self.fallbackSidecar(for: object),
+                        hasThumbnail: allKeys.contains(
+                            BucketKeys.thumbnailKey(forClipKey: object.key)))
         }
         return ClipOrdering.sorted(clips)
     }

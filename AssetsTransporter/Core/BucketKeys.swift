@@ -2,7 +2,8 @@ import Foundation
 
 /// Builds and parses S3 object keys for the bucket layout:
 /// `<client>/client.json`, `<client>/<project>/project.json`,
-/// `<client>/<project>/clips/<yyyy-MM-dd_HHmmss>_<camera>_<id>.<ext>` (+ `.json` sidecar).
+/// `<client>/<project>/clips/<yyyy-MM-dd_HHmmss>_<camera>_<id>.<ext>`
+/// (+ `.json` sidecar, + optional `.thumb.jpg` poster frame).
 nonisolated enum BucketKeys {
     /// UTC, fixed-locale timestamp formatter for clip key prefixes.
     private static let timestampFormatter: DateFormatter = {
@@ -36,6 +37,13 @@ nonisolated enum BucketKeys {
         clipKey + ".json"
     }
 
+    /// Poster-frame JPEG stored alongside the clip and its sidecar. Optional:
+    /// clips uploaded before this feature (or whose generation failed) simply
+    /// have no thumbnail object.
+    static func thumbnailKey(forClipKey clipKey: String) -> String {
+        clipKey + ".thumb.jpg"
+    }
+
     /// "acme-corp-x7f2" -> "acme-corp-x7f2/" (unchanged if already slash-terminated).
     /// Folder prefixes must be slash-terminated before listing/deleting so a
     /// prefix can never match a sibling folder that merely shares its spelling.
@@ -44,7 +52,7 @@ nonisolated enum BucketKeys {
     }
 
     static func isClipFile(_ key: String) -> Bool {
-        key.contains("/clips/") && !key.hasSuffix(".json")
+        key.contains("/clips/") && !key.hasSuffix(".json") && !key.hasSuffix(".thumb.jpg")
     }
 
     /// Extracts the leading `yyyy-MM-dd_HHmmss` timestamp from the key's last

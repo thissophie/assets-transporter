@@ -145,8 +145,9 @@ struct BucketReaderTests {
 
     // MARK: - listClips
 
-    // 3. Sidecars merge onto clips; missing sidecar -> fallback; sidecar objects
-    //    themselves never appear as clips; ordered by effectiveTime.
+    // 3. Sidecars merge onto clips; missing sidecar -> fallback; sidecar and
+    //    thumbnail objects themselves never appear as clips (but a thumbnail in
+    //    the listing sets hasThumbnail); ordered by effectiveTime.
     @Test func listClipsMergesSidecarsAndFallsBackForMissingOnes() async throws {
         let base = "acme-corp-x7f2/spring-gala-k9q1/clips/"
         let listXML = """
@@ -154,6 +155,7 @@ struct BucketReaderTests {
           <IsTruncated>false</IsTruncated>
           <Contents><Key>\(base)2026-03-01_120000_cama_abc1.mov</Key><Size>1000</Size></Contents>
           <Contents><Key>\(base)2026-03-01_120000_cama_abc1.mov.json</Key><Size>300</Size></Contents>
+          <Contents><Key>\(base)2026-03-01_120000_cama_abc1.mov.thumb.jpg</Key><Size>40</Size></Contents>
           <Contents><Key>\(base)2026-02-01_090000_camb_def2.mov</Key><Size>2000</Size></Contents>
         </ListBucketResult>
         """
@@ -170,12 +172,17 @@ struct BucketReaderTests {
 
         #expect(clips.count == 2)
         #expect(!clips.contains { $0.key.hasSuffix(".json") })
+        #expect(!clips.contains { $0.key.hasSuffix(".thumb.jpg") })
 
         // Ordered by effectiveTime: February clip before March clip.
         #expect(clips.map(\.key) == [
             base + "2026-02-01_090000_camb_def2.mov",
             base + "2026-03-01_120000_cama_abc1.mov",
         ])
+
+        // Thumbnail presence comes straight from the listing.
+        #expect(!clips[0].hasThumbnail)
+        #expect(clips[1].hasThumbnail)
 
         // Missing sidecar -> fallback synthesized from key + listing entry.
         let fallback = clips[0].sidecar
@@ -195,7 +202,8 @@ struct BucketReaderTests {
         #expect(clips[1].sidecar.sourceDevice == "iPhone 17")
 
         // Exactly one list + one sidecar GET: the clip without a sidecar in the
-        // listing must not trigger a speculative sidecar fetch.
+        // listing must not trigger a speculative sidecar fetch, and thumbnail
+        // presence must not cost a request.
         #expect(transport.requests.count == 2)
 
         // The listing request targeted <project>/clips/ with no delimiter.

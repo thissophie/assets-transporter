@@ -81,14 +81,20 @@ nonisolated struct BucketWriter: Sendable {
                                totalBytes: listing.objects.reduce(0) { $0 + $1.size })
     }
 
-    /// Deletes the clip file, then its sidecar. A 404 on the sidecar delete is
-    /// tolerated (the sidecar may not exist); any other error propagates.
+    /// Deletes the clip file, then its sidecar, then its thumbnail. A 404 on
+    /// the sidecar or thumbnail delete is tolerated (either may not exist);
+    /// any other error propagates.
     func deleteClip(_ clip: Clip) async throws {
         try await client.deleteObject(key: clip.key)
         do {
             try await client.deleteObject(key: BucketKeys.sidecarKey(forClipKey: clip.key))
         } catch S3Error.http(status: 404, body: _) {
             // Sidecar was already absent — nothing to clean up.
+        }
+        do {
+            try await client.deleteObject(key: BucketKeys.thumbnailKey(forClipKey: clip.key))
+        } catch S3Error.http(status: 404, body: _) {
+            // No thumbnail (pre-feature clip or generation failed) — fine.
         }
     }
 
