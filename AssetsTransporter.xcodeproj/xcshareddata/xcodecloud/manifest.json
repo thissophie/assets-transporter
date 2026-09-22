@@ -1,0 +1,9 @@
+{
+  "id" : "69c37103-03b2-4c02-b606-224ce0844cc5",
+  "targets" : [
+    {
+      "id" : "0ddc34aa-6e36-499c-aca5-c161444ff74b",
+      "name" : "AssetsTransporter"
+    }
+  ]
+}
