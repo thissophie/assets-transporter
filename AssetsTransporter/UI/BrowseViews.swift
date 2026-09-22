@@ -16,6 +16,9 @@ struct BrowseRootView: View {
     @State private var selectedClientID: ClientRef.ID?
     @State private var selectedProjectID: ProjectRef.ID?
     @State private var showingUploadQueue = false
+    /// Bumped by the published refresh action; `ProjectDetailView` reloads
+    /// its clip list whenever it changes.
+    @State private var refreshTrigger = 0
 
     var body: some View {
         NavigationSplitView {
@@ -34,7 +37,7 @@ struct BrowseRootView: View {
         } detail: {
             Group {
                 if let project = selectedProject {
-                    ProjectDetailView(project: project)
+                    ProjectDetailView(project: project, refreshTrigger: refreshTrigger)
                 } else {
                     Text("Select a project")
                         .foregroundStyle(.secondary)
@@ -58,6 +61,7 @@ struct BrowseRootView: View {
             // the list reflects the new bucket without a manual refresh.
             await browse.refreshClients(reader: session.reader)
         }
+        .focusedSceneValue(\.refreshAction, refreshVisible)
         .onChange(of: selectedClientID) {
             selectedProjectID = nil
         }
@@ -73,6 +77,19 @@ struct BrowseRootView: View {
     private var selectedProject: ProjectRef? {
         guard let clientPrefix = selectedClientID, let projectID = selectedProjectID else { return nil }
         return browse.projects(for: clientPrefix).first { $0.id == projectID }
+    }
+
+    /// View ▸ Refresh: reloads every level this window is showing — the
+    /// client list, the selected client's projects, and (via the trigger)
+    /// the open project's clip list.
+    private func refreshVisible() {
+        refreshTrigger += 1
+        Task {
+            await browse.refreshClients(reader: session.reader)
+            if let client = selectedClient {
+                await browse.refreshProjects(reader: session.reader, clientPrefix: client.prefix)
+            }
+        }
     }
 }
 
@@ -309,12 +326,6 @@ struct ProjectListView: View {
         }
         .navigationTitle(client.displayName)
         .toolbar {
-            #if os(macOS)
-            Button("Refresh", systemImage: "arrow.clockwise") {
-                Task { await refresh() }
-            }
-            .disabled(browse.isLoading)
-            #endif
             Button("New Project", systemImage: "plus") {
                 newProjectName = ""
                 showingNewProject = true

@@ -17,7 +17,7 @@ extension UploadJob.State {
 /// The upload queue (Task 5.6): every persisted job from the shared store,
 /// with retry/remove for failed jobs and remove for done ones.
 ///
-/// Pull model: the store is reloaded on appear, on the refresh button, and
+/// Pull model: the store is reloaded on appear, on pull-to-refresh, and
 /// whenever `IntakeModel.active` changes (the engine persists every state
 /// transition, so a reload after any active change is always current).
 struct UploadQueueView: View {
@@ -47,12 +47,6 @@ struct UploadQueueView: View {
                     }
                     .disabled(isLoading || completedJobs.isEmpty)
                 }
-                ToolbarItem {
-                    Button("Refresh", systemImage: "arrow.clockwise") {
-                        Task { await reload() }
-                    }
-                    .disabled(isLoading)
-                }
             }
             .safeAreaInset(edge: .bottom) { footer }
         }
@@ -69,8 +63,14 @@ struct UploadQueueView: View {
 
     @ViewBuilder private var list: some View {
         if jobs.isEmpty {
-            ContentUnavailableView("No uploads", systemImage: "tray",
-                                   description: Text("Clips you add appear here while they upload."))
+            // In a ScrollView so pull-to-refresh is available from the empty
+            // state; a bare ContentUnavailableView has no scroll surface.
+            ScrollView {
+                ContentUnavailableView("No uploads", systemImage: "tray",
+                                       description: Text("Clips you add appear here while they upload."))
+                    .containerRelativeFrame([.horizontal, .vertical])
+            }
+            .refreshable { await reload() }
         } else {
             List(jobs) { job in
                 let live = session.intake.active.first { $0.id == job.id }

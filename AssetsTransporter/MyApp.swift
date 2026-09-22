@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 Button("Servers") { openWindow(id: Self.serversWindowID) }
                     .keyboardShortcut("0", modifiers: [.command, .shift])
             }
+            RefreshCommands()
         }
 
         WindowGroup(id: Self.serverWindowID, for: ServerProfile.ID.self) { $serverID in

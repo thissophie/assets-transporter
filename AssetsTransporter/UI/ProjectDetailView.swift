@@ -19,6 +19,8 @@ import UniformTypeIdentifiers
 struct ProjectDetailView: View {
     @Environment(ServerSession.self) private var session
     var project: ProjectRef
+    /// Bumped by View ▸ Refresh (macOS); each change reloads the clip list.
+    var refreshTrigger = 0
 
     /// The server's intake/upload coordinator: shared so the upload queue
     /// screen and this view observe (and guard) the same sequential loop.
@@ -72,6 +74,9 @@ struct ProjectDetailView: View {
                 loadError = nil
                 intake.onClipsChanged = { Task { await refresh() } }
                 await refresh()
+            }
+            .onChange(of: refreshTrigger) {
+                Task { await refresh() }
             }
             .sheet(item: $editingClip) { clip in
                 ClipEditSheet(clip: clip) { await refresh() }
@@ -379,12 +384,6 @@ struct ProjectDetailView: View {
             }
         }
         #if os(macOS)
-        ToolbarItem {
-            Button("Refresh", systemImage: "arrow.clockwise") {
-                Task { await refresh() }
-            }
-            .disabled(isLoading)
-        }
         ToolbarItem {
             Button("Add Clips", systemImage: "plus") {
                 showingFileImporter = true
