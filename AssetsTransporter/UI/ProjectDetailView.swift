@@ -157,13 +157,22 @@ struct ProjectDetailView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                #if os(macOS)
-                ContentUnavailableView("No clips yet", systemImage: "film.stack",
-                                       description: Text("Drop video files or folders here, or click + to add"))
-                #else
-                ContentUnavailableView("No clips yet", systemImage: "film.stack",
-                                       description: Text("Add videos from Photos or Files"))
-                #endif
+                // In a ScrollView so pull-to-refresh is available from the
+                // empty state — exactly where a failed or stale load needs a
+                // retry; a bare ContentUnavailableView has no scroll surface.
+                ScrollView {
+                    Group {
+                        #if os(macOS)
+                        ContentUnavailableView("No clips yet", systemImage: "film.stack",
+                                               description: Text("Drop video files or folders here, or click + to add"))
+                        #else
+                        ContentUnavailableView("No clips yet", systemImage: "film.stack",
+                                               description: Text("Add videos from Photos or Files"))
+                        #endif
+                    }
+                    .containerRelativeFrame([.horizontal, .vertical])
+                }
+                .refreshable { await refresh() }
             }
         } else {
             List(selection: $selection) {
