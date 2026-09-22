@@ -176,9 +176,16 @@ struct ClientListView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView("No clients yet",
-                                       systemImage: "person.2",
-                                       description: Text("Tap + to create one"))
+                // In a ScrollView so pull-to-refresh is available from the
+                // empty state — exactly where a failed or stale load needs a
+                // retry; a bare ContentUnavailableView has no scroll surface.
+                ScrollView {
+                    ContentUnavailableView("No clients yet",
+                                           systemImage: "person.2",
+                                           description: Text("Tap + to create one"))
+                        .containerRelativeFrame([.horizontal, .vertical])
+                }
+                .refreshable { await refresh() }
             }
         } else {
             List(selection: $selection) {
@@ -380,9 +387,15 @@ struct ProjectListView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView("No projects yet",
-                                       systemImage: "folder",
-                                       description: Text("Tap + to create one"))
+                // Same shape as the empty client list: scrollable so a failed
+                // or stale load can be retried by pulling down.
+                ScrollView {
+                    ContentUnavailableView("No projects yet",
+                                           systemImage: "folder",
+                                           description: Text("Tap + to create one"))
+                        .containerRelativeFrame([.horizontal, .vertical])
+                }
+                .refreshable { await refresh() }
             }
         } else {
             List(selection: $selection) {
