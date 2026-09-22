@@ -42,6 +42,12 @@ struct UploadQueueView: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem {
+                    Button("Clear Completed") {
+                        Task { await clearCompleted() }
+                    }
+                    .disabled(isLoading || completedJobs.isEmpty)
+                }
+                ToolbarItem {
                     Button("Refresh", systemImage: "arrow.clockwise") {
                         Task { await reload() }
                     }
@@ -128,6 +134,19 @@ struct UploadQueueView: View {
             await session.intake.remove(jobID: job.id, session: session)
             await reload()
         }
+    }
+
+    private var completedJobs: [UploadJob] {
+        jobs.filter { if case .done = $0.state { true } else { false } }
+    }
+
+    /// Removes every done job through the same path as the per-row Remove
+    /// button, so staged copies are reclaimed too.
+    private func clearCompleted() async {
+        for job in completedJobs {
+            await session.intake.remove(jobID: job.id, session: session)
+        }
+        await reload()
     }
 }
 
