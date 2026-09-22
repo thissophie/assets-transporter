@@ -78,7 +78,17 @@ struct ServerListView: View {
                     .foregroundStyle(.red)
             }
             ForEach(app.servers) { profile in
-                ServerRow(profile: profile, status: status(for: profile))
+                HStack {
+                    ServerRow(profile: profile, status: status(for: profile))
+                    Spacer()
+                    // Inline entry to the editor so it's discoverable without
+                    // knowing about the context menu or swipe actions.
+                    Button("Edit “\(profile.name)”…", systemImage: "info.circle") {
+                        editorTarget = .edit(profile)
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                }
                     .tag(profile.id)
                     .swipeActions(edge: .trailing) {
                         Button("Delete…", role: .destructive) { deleteTarget = profile }

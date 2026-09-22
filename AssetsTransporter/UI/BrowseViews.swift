@@ -13,7 +13,6 @@ struct BrowseRootView: View {
     var onShowServers: (() -> Void)? = nil
 
     @State private var browse = BrowseModel()
-    @State private var showingServerEditor = false
     @State private var selectedClientID: ClientRef.ID?
     @State private var selectedProjectID: ProjectRef.ID?
     @State private var showingUploadQueue = false
@@ -22,7 +21,6 @@ struct BrowseRootView: View {
         NavigationSplitView {
             ClientListView(browse: browse,
                            selection: $selectedClientID,
-                           showingServerEditor: $showingServerEditor,
                            showingUploadQueue: $showingUploadQueue,
                            onShowServers: onShowServers)
         } content: {
@@ -66,9 +64,6 @@ struct BrowseRootView: View {
         .sheet(isPresented: $showingUploadQueue) {
             UploadQueueView()
         }
-        .sheet(isPresented: $showingServerEditor) {
-            ServerEditorView(existing: session.profile)
-        }
     }
 
     private var selectedClient: ClientRef? {
@@ -87,7 +82,6 @@ struct ClientListView: View {
     @Environment(ServerSession.self) private var session
     var browse: BrowseModel
     @Binding var selection: ClientRef.ID?
-    @Binding var showingServerEditor: Bool
     @Binding var showingUploadQueue: Bool
     var onShowServers: (() -> Void)? = nil
 
@@ -112,14 +106,6 @@ struct ClientListView: View {
                     Button("Servers", systemImage: "chevron.backward", action: onShowServers)
                 }
             }
-            #if os(macOS)
-            ToolbarItem {
-                Button("Refresh", systemImage: "arrow.clockwise") {
-                    Task { await refresh() }
-                }
-                .disabled(browse.isLoading)
-            }
-            #endif
             ToolbarItem {
                 Button("New Client", systemImage: "plus") {
                     newClientName = ""
@@ -134,11 +120,6 @@ struct ClientListView: View {
                 }
             }
             #endif
-            ToolbarItem {
-                Button("Edit Server", systemImage: "gearshape") {
-                    showingServerEditor = true
-                }
-            }
         }
         .onDisappear { previewTask?.cancel() }
         .confirmationDialog("Delete “\(deletionPrompt?.name ?? "")”?",
