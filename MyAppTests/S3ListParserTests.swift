@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 struct S3ListParserTests {
     @Test func parsesTruncatedListingWithContentsAndPrefixes() throws {

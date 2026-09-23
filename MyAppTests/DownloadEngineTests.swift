@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Thread-safe recorder for the batch progress callback.
 private nonisolated final class ProgressRecorder: @unchecked Sendable {

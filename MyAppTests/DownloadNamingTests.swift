@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 struct DownloadNamingTests {
     private func clip(key: String, displayName: String, cameraLabel: String?) -> Clip {

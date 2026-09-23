@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Tests the pure reorder helper; the rest of BrowseModel is network-coupled
 /// and exercised manually / in integration.

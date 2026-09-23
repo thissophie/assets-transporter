@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 struct S3ConfigTests {
     private func makeConfig(style: S3Config.AddressingStyle = .path) -> S3Config {

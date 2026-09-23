@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 struct ClipOrderingTests {
     private func clip(_ key: String, captured: TimeInterval?, override: TimeInterval? = nil) -> Clip {

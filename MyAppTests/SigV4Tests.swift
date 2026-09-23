@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 struct SigV4Tests {
     // Vector from AWS docs "Deriving the signing key". If this fails, verify against

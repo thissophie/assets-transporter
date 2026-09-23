@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Environment gate for the ministack integration suite: the tests only run
 /// when `S3_IT_ENDPOINT` is set (e.g. http://localhost:4566), so normal test

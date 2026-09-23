@@ -1,5 +1,5 @@
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 struct SlugTests {
     @Test func basicSlugging() {

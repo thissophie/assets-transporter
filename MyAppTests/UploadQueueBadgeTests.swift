@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Pins the queue screen's state → badge text mapping (one case per
 /// `UploadJob.State`). The live "%" suffix for uploading rows and the

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Pins the shared user-facing error text: HTTP errors show the status only
 /// (never the response body, which can echo request details), URL errors use

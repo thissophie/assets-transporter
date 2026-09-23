@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// `expandDropped` must copy a dropped folder's video children into the temp
 /// intake directory WHILE the folder's security scope is held: a child URL of

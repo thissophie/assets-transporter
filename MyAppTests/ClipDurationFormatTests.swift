@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Pins `ClipRow.formatDuration`: m:ss with hours deliberately rolling into
 /// minutes (per spec — clip rows favor a compact single format over h:mm:ss).

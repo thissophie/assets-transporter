@@ -8,18 +8,18 @@ be felt in real use.
 
 ## Before relying on it in the field
 
-- [ ] **Finish the `MyApp` → `AssetsTransporter` rename — unit tests don't build.** Commit
-  `b85a196` renamed the project, app target, scheme and source folder, but left the rest behind:
-  `MyAppTests` still has `TEST_HOST` pointing at `MyApp.app` and `@testable import MyApp` in
-  every file (fails with "Unable to resolve module dependency: 'MyApp'"); the auto-generated
-  `AssetsTransporter` scheme has no test action, so `xcodebuild test` refuses to run; only
-  `MyAppUITests` has a shared scheme. Also still old: the test target names, the `@main` struct
-  and its file `MyApp.swift`, the `MyAppTests` bundle id (`devplaceholder.…MyApp.MyAppTests`),
-  the `MyAppUITests` bundle id (`com.yourcompany.MyAppUITests`), and the app bundle id is
-  `com.tamatekapua.AssetTransporter` (no "s"). Fix in Xcode (never by
-  hand-editing `project.pbxproj`): re-point the test host, change the imports to
-  `AssetsTransporter`, share an `AssetsTransporter` scheme with both test bundles, then update
-  the build/test commands in `CLAUDE.md`.
+- [ ] **Finish the `MyApp` → `AssetsTransporter` rename — cosmetic bits still old.** Commit
+  `b85a196` renamed the project, app target, scheme and source folder. Done since: `MyAppTests`'
+  `TEST_HOST`/`BUNDLE_LOADER` now point at `AssetsTransporter.app`/`AssetsTransporter`, every test
+  file imports `@testable import AssetsTransporter`, both test targets' `DEVELOPMENT_TEAM` matches
+  the app's (a mismatch there made the test bundle fail to load with a code-signature Team ID
+  error), and a shared `AssetsTransporter.xcscheme` now has a Test action covering both `MyAppTests`
+  and `MyAppUITests` (189 tests discovered; unit tests pass, `IntegrationTests` skip without
+  `S3_IT_ENDPOINT`, `MyAppUITests` fails without the E2E ministack — all expected). Still old:
+  the test target names, the `@main` struct and its file `MyApp.swift`, the `MyAppTests` bundle id
+  (`devplaceholder.…MyApp.MyAppTests`), the `MyAppUITests` bundle id (`com.yourcompany.MyAppUITests`),
+  and the app bundle id `com.tamatekapua.AssetTransporter` (no "s"). Fix in Xcode (never by
+  hand-editing `project.pbxproj`) if these are worth chasing further.
 
 - [ ] **Verify iPhone background uploads on a real device.** The background
   `URLSession` transport and the relaunch handler (`AppDelegate` in

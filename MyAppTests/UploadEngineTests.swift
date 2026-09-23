@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Thread-safe collector for progress callback values.
 private nonisolated final class ProgressBox: @unchecked Sendable {

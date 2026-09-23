@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Pure tests for `ServerProfile` and the per-server local-state layout and
 /// migration (`ServerLocalState`). Keychain-backed load/save stay untested

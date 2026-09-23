@@ -13,8 +13,9 @@ with SigV4 signing. Design rationale lives in `docs/plans/2026-09-19-video-trans
 open work in `TODO.md`. The Xcode project is `AssetsTransporter.xcodeproj`; the app target,
 scheme and source folder are `AssetsTransporter` (renamed from `MyApp` in commit `b85a196`).
 The test targets kept their old names: `MyAppTests` (unit) and `MyAppUITests` (XCUITest), and
-the entry point is still `AssetsTransporter/MyApp.swift` with `@main struct MyApp`. The rename
-is unfinished on the test side — see the first item in `TODO.md`.
+the entry point is still `AssetsTransporter/MyApp.swift` with `@main struct MyApp`. Both test
+bundles build and run under the shared `AssetsTransporter` scheme; the rename is still unfinished
+cosmetically (target/bundle-id names) — see the first item in `TODO.md`.
 
 ## Building and testing
 
@@ -34,9 +35,6 @@ env $X xcodebuild build -project "$P" -scheme AssetsTransporter -destination 'pl
 env $X xcodebuild build -project "$P" -scheme AssetsTransporter -destination 'generic/platform=iOS Simulator'
 
 # All unit tests (Swift Testing, hosted in the AssetsTransporter app).
-# CURRENTLY BROKEN after the rename: the auto-generated AssetsTransporter scheme has no test
-# action, and MyAppTests still imports/hosts `MyApp` — see TODO.md. The commands below are the
-# intended form once that is fixed.
 env $X xcodebuild test -project "$P" -scheme AssetsTransporter -destination 'platform=macOS' -only-testing:MyAppTests
 
 # One suite / one test
@@ -49,8 +47,9 @@ env $X xcodebuild test -project "$P" -scheme AssetsTransporter -destination 'pla
   -only-testing:MyAppTests/IntegrationTests TEST_RUNNER_S3_IT_ENDPOINT=http://localhost:4566
 ```
 
-Tests use Swift Testing (`import Testing`, `@Test`, `#expect`, `@testable import MyApp`), not
-XCTest. `MyAppUITests` is XCUITest and has its own scheme. There is no linter configured.
+Tests use Swift Testing (`import Testing`, `@Test`, `#expect`, `@testable import AssetsTransporter`),
+not XCTest. `MyAppUITests` is XCUITest; it shares the `AssetsTransporter` scheme's test action
+(it also has its own standalone scheme for running just the UI tests). There is no linter configured.
 
 The project uses Xcode file-system-synchronized groups: any `.swift` file dropped under
 `AssetsTransporter/` or `MyAppTests/` is picked up automatically. Never hand-edit `project.pbxproj`.

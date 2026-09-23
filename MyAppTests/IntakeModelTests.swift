@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Tests the pure intake helpers; the staging/probe/enqueue pipeline is
 /// network- and filesystem-coupled and exercised manually / in integration.

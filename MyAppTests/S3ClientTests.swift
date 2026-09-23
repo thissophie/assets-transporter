@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Canned-response transport that records every request handed to it.
 nonisolated final class RecordingTransport: S3Transport, @unchecked Sendable {

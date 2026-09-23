@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import AssetsTransporter
 
 /// Pure tests for the StoredS3Settings -> S3Config bridge. Keychain-backed
 /// save/load/delete are intentionally untested (flaky in test hosts).
