@@ -451,7 +451,9 @@ final class MyAppUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(2.0))
             app.typeKey("g", modifierFlags: [.command, .shift])
             RunLoop.current.run(until: Date().addingTimeInterval(1.0))
-            app.typeText("/Users/patrick/WatchDrop")
+            // "~" is expanded by the panel to the real home (the sandboxed
+            // runner's own home would be its container).
+            app.typeText("~/WatchDrop")
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
             app.typeKey(.return, modifierFlags: [])
             RunLoop.current.run(until: Date().addingTimeInterval(1.5))
