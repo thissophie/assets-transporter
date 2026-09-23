@@ -1,6 +1,6 @@
 import Foundation
 
-/// Single source of user-facing error text (BrowseModel, SettingsView,
+/// Single source of user-facing error text (BrowseModel, ServerEditorView,
 /// ProjectDetailView, IntakeModel, …).
 ///
 /// Never includes credentials or HTTP response bodies: a body can echo

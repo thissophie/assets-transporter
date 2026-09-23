@@ -14,8 +14,9 @@ be felt in real use.
   every file (fails with "Unable to resolve module dependency: 'MyApp'"); the auto-generated
   `AssetsTransporter` scheme has no test action, so `xcodebuild test` refuses to run; only
   `MyAppUITests` has a shared scheme. Also still old: the test target names, the `@main` struct
-  and its file `MyApp.swift`, the `MyAppTests` bundle id (`devplaceholder.…MyApp.MyAppTests`), and
-  the app bundle id is `com.tamatekapua.AssetTransporter` (no "s"). Fix in Xcode (never by
+  and its file `MyApp.swift`, the `MyAppTests` bundle id (`devplaceholder.…MyApp.MyAppTests`),
+  the `MyAppUITests` bundle id (`com.yourcompany.MyAppUITests`), and the app bundle id is
+  `com.tamatekapua.AssetTransporter` (no "s"). Fix in Xcode (never by
   hand-editing `project.pbxproj`): re-point the test host, change the imports to
   `AssetsTransporter`, share an `AssetsTransporter` scheme with both test bundles, then update
   the build/test commands in `CLAUDE.md`.
@@ -47,11 +48,11 @@ be felt in real use.
 - [x] **Per-clip download selection.** Done 2026-09-22: row multi-select with
   download/delete of just the selected clips
   (`docs/plans/2026-09-22-clip-multi-select-design.md`).
-- [ ] **Remote clip thumbnails.** Remote clips show a static video icon; only
-  in-flight uploads get real frames (from their local staged file). Real
-  thumbnails need ranged GETs of the moov atom or server-side stills — or
-  cheapest: upload a small JPEG poster next to the sidecar at intake time,
-  which fits the bucket's self-describing design.
+- [x] **Remote clip thumbnails.** Done: the upload engine writes a best-effort
+  `<clip key>.thumb.jpg` poster frame (`Core/Upload/ClipThumbnailer.swift`)
+  just before the sidecar, and the clip list shows it. Clips uploaded before
+  the feature still show the static video icon; backfilling them would need
+  ranged GETs of the moov atom.
 - [ ] **Batch deletion (`DeleteObjects`).** `deletePrefix` deletes one object
   per request; a 500-object client is 500 round trips. Add the S3 batch-delete
   call (≤1000 keys/request) to `S3Client` and use it in
@@ -63,13 +64,15 @@ be felt in real use.
   clip has 16 jumps and nothing moves during a part. Needs per-task byte
   progress surfaced through the `S3Transport` abstraction (e.g. an optional
   progress callback on `perform`, fed by `URLSessionTask.progress`).
-- [ ] **VoiceOver labels on form fields.** Settings, create/rename alerts, and
-  the clip edit sheet rely on placeholders/prompts, so fields are unnamed to
-  VoiceOver (E2E finding). The queue badge and chevrons were already fixed.
+- [ ] **Re-check VoiceOver on form fields.** The E2E pass found fields named
+  only by placeholders. Every `TextField`/`SecureField` (server editor,
+  create/rename alerts, camera-label and clip edit sheets) now has a title,
+  which SwiftUI uses as the accessibility label — confirm with VoiceOver and
+  close. The queue badge and chevrons were already fixed.
 - [ ] **Surface maintenance results better.** The stale-upload sweep and
   staging-orphan cleanup report only into the Upload Queue footer
   (`maintenanceNote`) — easy to never see. Consider a transient toast or a
-  line in Settings.
+  line in the Servers window.
 - [ ] **Camera-label prompt for watched folders.** The watch uses the
   session's last camera label without prompting (documented choice, since the
   watch runs unattended). A per-watch label in the watch setup flow would be
@@ -124,5 +127,5 @@ be felt in real use.
 - ISO8601 timestamps in manifests/sidecars are whole-second precision — a
   deliberate bucket-format contract; clip ordering tie-breaks on key.
 - Watched-folder processed log caps at the most recent 1000 files.
-- `deleteClip`'s sidecar-404 tolerance never fires against real S3 (deletes of
+- `deleteClip`'s sidecar/thumbnail-404 tolerance never fires against real S3 (deletes of
   missing keys return 204) — kept for stricter S3-compatible backends.

@@ -69,15 +69,17 @@ Views and `@Observable` view-models stay main-actor. Off-main workers are `actor
 **Self-describing bucket, no index.** Concurrency safety across devices comes from the layout:
 
 ```
-<client-slug-id>/client.json
+<client-slug-id>/client.json                             (displayName, optional hidden)
 <client-slug-id>/<project-slug-id>/project.json          (displayName, sortIndex, createdAt)
 <client-slug-id>/<project-slug-id>/clips/<yyyy-MM-dd_HHmmss>_<camera>_<id>.<ext>
 <client-slug-id>/<project-slug-id>/clips/<same key>.json  (ClipSidecar)
+<client-slug-id>/<project-slug-id>/clips/<same key>.thumb.jpg  (optional poster frame)
 ```
 
 Entities are discovered by prefix listing; an entity exists iff its manifest does. Each clip's
 metadata lives only in its own sidecar, written strictly *after* the multipart upload completes,
-so a clip "exists" only once fully uploaded. Manual clip reorder writes `orderOverride` into
+so a clip "exists" only once fully uploaded. The poster-frame thumbnail is PUT just before the
+sidecar, best effort: a failure never blocks the sidecar, and older clips have none. Manual clip reorder writes `orderOverride` into
 that clip's sidecar; project reorder writes `sortIndex` into each `project.json`. Clip keys are
 immutable; renames touch only the sidecar. Keep this contract when adding features — never
 introduce a central index or rewrite a sibling's manifest. Timestamps are ISO8601 whole-second
@@ -90,6 +92,8 @@ introduce a central index or rewrite a sibling's manifest. Timestamps are ISO860
   protocol. `URLSessionTransport` for macOS, `BackgroundTransport.shared` (background
   `URLSession`, upload-from-file only, continuation table) for iOS. `SigV4` signs, `S3Config`
   builds path- or virtual-host URLs, `S3ListParser` parses ListObjectsV2 XML.
+  `S3Client.presignedGetURL` (via `SigV4.presignedURL`) backs in-app streaming, since `AVPlayer`
+  can't send `Authorization` headers.
 - `Core/BucketKeys`, `Slug`, `Manifests`, `ClipOrdering`, `DownloadNaming` — pure value logic.
 - `Core/BucketStore.swift` (`BucketReader`) and `BucketWriter` — read/mutate the layout above.
   Unreadable manifests never hide entries; a fallback is synthesized.
@@ -97,9 +101,11 @@ introduce a central index or rewrite a sibling's manifest. Timestamps are ISO860
   `multipartCompleted` are the resume source of truth, not `state`), `UploadQueueStore`
   (single JSON file in Application Support, actor-serialized), `UploadEngine` (one job at a
   time; persists every transition before proceeding; resumes via `listParts`; stages ≤64 MB part
-  files with chunked reads), `ClipProber` (AVFoundation), `WatchedFolder` (macOS DispatchSource).
+  files with chunked reads; writes the thumbnail then the sidecar after completion), `ClipProber`
+  (AVFoundation), `ClipThumbnailer` (first-frame JPEG, ≤320 px), `WatchedFolder` (macOS
+  DispatchSource).
 - `Core/DownloadEngine` — ranged, resumable `getObject` in 32 MB chunks; writes
-  `NNN_camera_name.ext` files plus a copy of `project.json`.
+  `NNN_camera_name.ext` files; whole-project downloads also write a copy of `project.json`.
 - `Core/ServerProfile` — `ServerProfile` (`id`, user-chosen `name`, `StoredS3Settings`); identity is
   the id, never the URL. `ServerLocalState` owns the per-server local layout
   (`UploadQueue/<id>/jobs.json`, defaults keys `watchConfig.<id>` / `watchProcessed.<id>`) and the
@@ -122,11 +128,16 @@ introduce a central index or rewrite a sibling's manifest. Timestamps are ISO860
   session for a server id and injects it as `@Environment(ServerSession.self)`).
 - `UI/BrowseModel`, `BrowseViews`, `ProjectDetailView`, `UploadQueueView` — all read the
   `ServerSession` from the environment; navigation is `NavigationSplitView` on macOS, stack on
-  iOS; downloads are whole-project only.
+  iOS; every list supports pull-to-refresh. Downloads are whole-project or a multi-selection of
+  clips; clips stream in-app through `AVPlayer` from a presigned URL. Clients can be hidden
+  (`client.json` `hidden`, toggled via the context menu; `BrowseModel.showHiddenClients`).
+- `UI/RefreshCommands` — macOS View ▸ Refresh ⌘R, forwarding to the focused server window's
+  `refreshAction` focused value (published by `BrowseRootView`).
 - `MyApp.swift` (the `@main` app struct; the file kept its old name) — macOS scenes:
-  `Window("Servers")` (launch window; File ▸ New Server… ⌘N, Window ▸ Servers ⇧⌘0) and
+  `Window("Servers")` (launch window; File ▸ New Server… ⌘N, Window ▸ Servers ⇧⌘0, View ▸ Refresh ⌘R) and
   `WindowGroup(id: "server", for: ServerProfile.ID.self)` (one window per server; reopening the
-  same id raises it). iOS: a single `WindowGroup` with `ContentView`.
+  same id raises it). iOS: a single `WindowGroup` with `ContentView` (`ContentView.swift` swaps
+  between the server list and the chosen server).
 
 **Testing seams.** `S3Transport` is the injection point: `RecordingTransport` in
 `S3ClientTests.swift` returns canned responses and captures requests; `FlakyTransport` in
