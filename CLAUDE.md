@@ -47,6 +47,21 @@ env $X xcodebuild test -project "$P" -scheme AssetsTransporter -destination 'pla
   -only-testing:MyAppTests/IntegrationTests TEST_RUNNER_S3_IT_ENDPOINT=http://localhost:4566
 ```
 
+`IntegrationTests` takes its whole connection from the environment (`IntegrationEnv`), defaulting
+to the ministack values above, so the same suite can be pointed at a real S3-compatible endpoint:
+`S3_IT_ENDPOINT` (also the on/off gate — blank or unset skips the suite), `S3_IT_BUCKET`,
+`S3_IT_ACCESS_KEY`, `S3_IT_SECRET_KEY`, `S3_IT_REGION`, `S3_IT_STYLE` (`path` | `virtualHost`).
+Prefix each name with `TEST_RUNNER_` on the `xcodebuild` command line; in Xcode they are set on
+the test action of a **local, unshared** scheme — `AssetsTransporter (Live S3)` — which lives in
+`AssetsTransporter.xcodeproj/xcuserdata/`, and `.gitignore` covers `xcuserdata/`, so real
+credentials never become a tracked file. That scheme must stay unshared. Every test confines
+itself to a unique `it-<uuid>/` prefix and never lists or deletes outside it, which is what makes
+a live bucket safe to aim at. Against real AWS the IAM user needs `s3:PutObject`, `s3:GetObject`,
+`s3:DeleteObject`, `s3:AbortMultipartUpload`, `s3:ListMultipartUploadParts` on
+`arn:aws:s3:::<bucket>/*` plus `s3:ListBucket` and `s3:ListBucketMultipartUploads` on
+`arn:aws:s3:::<bucket>` — the last one is only exercised by `staleUploadSweep`, so its absence
+fails exactly one test.
+
 Tests use Swift Testing (`import Testing`, `@Test`, `#expect`, `@testable import AssetsTransporter`),
 not XCTest. `MyAppUITests` is XCUITest; it shares the `AssetsTransporter` scheme's test action
 (it also has its own standalone scheme for running just the UI tests). There is no linter configured.
