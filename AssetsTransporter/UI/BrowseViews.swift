@@ -45,6 +45,14 @@ struct BrowseRootView: View {
                 }
             }
             #if os(macOS)
+            // The window title is the browsing context — which client, on
+            // which server — with the open project as the subtitle beneath
+            // it. It lives here because the detail column's title is the one
+            // macOS puts in the titlebar, which is why `ProjectDetailView`
+            // sets no title of its own on macOS.
+            .navigationTitle(BrowseTitle.clientAndServer(client: selectedClient?.displayName,
+                                                         serverName: session.profile.name))
+            .navigationSubtitle(selectedProject?.manifest.displayName ?? "")
             // The upload queue is server-wide, not per client, so on macOS it
             // lives in the main content area's toolbar rather than the sidebar.
             .toolbar {
@@ -113,6 +121,7 @@ struct ClientListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            ServerNameHeader(name: session.profile.name)
             BrowseStatusHeader(browse: browse)
             list
         }
@@ -329,7 +338,10 @@ struct ProjectListView: View {
             BrowseStatusHeader(browse: browse)
             list
         }
-        .navigationTitle(client.displayName)
+        // Matches the macOS window title; on iPad/iPhone this is the column's
+        // own navigation bar title.
+        .navigationTitle(BrowseTitle.clientAndServer(client: client.displayName,
+                                                     serverName: session.profile.name))
         .toolbar {
             Button("New Project", systemImage: "plus") {
                 newProjectName = ""
@@ -503,6 +515,43 @@ struct ProjectListView: View {
 }
 
 // MARK: - Shared pieces
+
+/// Composes the browsing context title — "Client – Server" — used for the
+/// macOS window title and the projects column. Either part can be missing
+/// (no client picked yet, an unnamed server), so it degrades to whichever
+/// half it has rather than leaving a stray dash.
+nonisolated enum BrowseTitle {
+    static func clientAndServer(client: String?, serverName: String?) -> String {
+        [client, serverName]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " – ")
+    }
+}
+
+/// The open server's name, pinned above the client list, so the clients are
+/// visibly *this* server's. The title says it too, but only in the titlebar
+/// and only once a client is selected.
+private struct ServerNameHeader: View {
+    var name: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "server.rack")
+                .foregroundStyle(.secondary)
+            Text(name)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Server \(name)")
+    }
+}
 
 /// A prefix deletion awaiting user confirmation: display name, the prefix to
 /// delete, and the fetched preview of what that would remove.

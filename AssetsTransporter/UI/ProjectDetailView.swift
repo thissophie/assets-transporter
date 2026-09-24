@@ -64,7 +64,13 @@ struct ProjectDetailView: View {
 
     var body: some View {
         platformContent
+            // macOS deliberately sets no title here: the detail column's
+            // title is what lands in the titlebar, and `BrowseRootView` uses
+            // it for the client/server context, with this project's name as
+            // the window subtitle.
+            #if os(iOS)
             .navigationTitle(project.manifest.displayName)
+            #endif
             .toolbar { toolbarContent }
             .task(id: project.prefix) {
                 // Clear the previous project's rows/error immediately so a
