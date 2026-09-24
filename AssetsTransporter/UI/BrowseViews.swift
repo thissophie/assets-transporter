@@ -178,9 +178,14 @@ struct ClientListView: View {
                 // empty state — exactly where a failed or stale load needs a
                 // retry; a bare ContentUnavailableView has no scroll surface.
                 ScrollView {
-                    ContentUnavailableView("No clients yet",
-                                           systemImage: "person.2",
-                                           description: Text("Tap + to create one"))
+                    ContentUnavailableView {
+                        Label("No clients yet", systemImage: "person.2")
+                    } actions: {
+                        Button("Add Client") {
+                            newClientName = ""
+                            showingNewClient = true
+                        }
+                    }
                         .containerRelativeFrame([.horizontal, .vertical])
                 }
                 .refreshable { await refresh() }
