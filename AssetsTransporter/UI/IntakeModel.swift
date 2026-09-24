@@ -25,7 +25,9 @@ import UIKit
         var attempt: Int
     }
 
-    struct ActiveUpload: Identifiable, Equatable {
+    /// `nonisolated` so the pure `UploadActivity` mappings (and their tests)
+    /// can read these off the main actor.
+    nonisolated struct ActiveUpload: Identifiable, Equatable {
         let id: UUID
         var displayName: String
         var progress: Double

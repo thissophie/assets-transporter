@@ -145,10 +145,24 @@ introduce a central index or rewrite a sibling's manifest. Timestamps are ISO860
   iOS; every list supports pull-to-refresh. Downloads are whole-project or a multi-selection of
   clips; clips stream in-app through `AVPlayer` from a presigned URL. Clients can be hidden
   (`client.json` `hidden`, toggled via the context menu; `BrowseModel.showHiddenClients`).
-- `UI/RefreshCommands` — macOS View ▸ Refresh ⌘R, forwarding to the focused server window's
-  `refreshAction` focused value (published by `BrowseRootView`).
+- `UI/UploadActivity` — pure roll-up of `IntakeModel.active` into what browsing shows about the
+  queue: a Mail-style status block pinned under the client list (`UploadActivityFooter`, present
+  only while there's something to report, and the click target for the queue sheet) and a per-row
+  in-progress ring on the client/project whose prefix the clips are landing under.
+  `clientColumnCarriesFooter` decides which column shows the footer: the client list owns it while
+  it's on screen, and the project list takes it over when it isn't — a collapsed sidebar on
+  macOS/iPad (`BrowseRootView` binds `NavigationSplitViewVisibility` solely to detect this; only
+  `.all` shows the leading column, and `.automatic` resolves to a concrete case when read) or a
+  drilled-in stack on iPhone (compact width, where the split view ignores `columnVisibility`
+  entirely, so the size class has to win). A `.failed` job counts as in progress
+  only while an automatic retry is still scheduled. There is deliberately no toolbar Uploads
+  button any more.
+- `UI/RefreshCommands` — macOS View ▸ Refresh ⌘R and View ▸ Uploads ⌘U, forwarding to the focused
+  server window's `refreshAction` / `showUploadQueueAction` focused values (published by
+  `BrowseRootView`). ⌘U is the queue's entry point when the sidebar is collapsed.
 - `MyApp.swift` (the `@main` app struct; the file kept its old name) — macOS scenes:
-  `Window("Servers")` (launch window; File ▸ New Server… ⌘N, Window ▸ Servers ⇧⌘0, View ▸ Refresh ⌘R) and
+  `Window("Servers")` (launch window; File ▸ New Server… ⌘N, Window ▸ Servers ⇧⌘0,
+  View ▸ Refresh ⌘R, View ▸ Uploads ⌘U) and
   `WindowGroup(id: "server", for: ServerProfile.ID.self)` (one window per server; reopening the
   same id raises it). iOS: a single `WindowGroup` with `ContentView` (`ContentView.swift` swaps
   between the server list and the chosen server).

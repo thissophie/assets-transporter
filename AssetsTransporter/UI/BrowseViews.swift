@@ -19,9 +19,16 @@ struct BrowseRootView: View {
     /// Bumped by the published refresh action; `ProjectDetailView` reloads
     /// its clip list whenever it changes.
     @State private var refreshTrigger = 0
+    /// Bound purely to place the upload footer: the sidebar toggle writes the
+    /// new visibility back here, and when the client column goes away the
+    /// project column picks the footer up.
+    @State private var columnVisibility = NavigationSplitViewVisibility.automatic
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             ClientListView(browse: browse,
                            selection: $selectedClientID,
                            showingUploadQueue: $showingUploadQueue,
@@ -29,7 +36,9 @@ struct BrowseRootView: View {
         } content: {
             if let client = selectedClient {
                 ProjectListView(browse: browse, client: client,
-                                selection: $selectedProjectID)
+                                selection: $selectedProjectID,
+                                showingUploadQueue: $showingUploadQueue,
+                                showsUploadFooter: !clientColumnCarriesFooter)
             } else {
                 Text("Select a client")
                     .foregroundStyle(.secondary)
@@ -53,17 +62,12 @@ struct BrowseRootView: View {
             .navigationTitle(BrowseTitle.clientAndServer(client: selectedClient?.displayName,
                                                          serverName: session.profile.name))
             .navigationSubtitle(selectedProject?.manifest.displayName ?? "")
-            // The upload queue is server-wide, not per client, so on macOS it
-            // lives in the main content area's toolbar rather than the sidebar.
-            .toolbar {
-                ToolbarItem {
-                    UploadQueueButton(activeCount: session.intake.active.count) {
-                        showingUploadQueue = true
-                    }
-                }
-            }
             #endif
         }
+        // View ▸ Uploads (⌘U). The upload queue used to hang off a toolbar
+        // button; now that its status lives at the foot of the sidebar, the
+        // menu is what still opens the queue when the sidebar is collapsed.
+        .focusedSceneValue(\.showUploadQueueAction) { showingUploadQueue = true }
         .task(id: session.profile.settings) {
             // Re-runs when the server's connection settings are edited, so
             // the list reflects the new bucket without a manual refresh.
@@ -76,6 +80,20 @@ struct BrowseRootView: View {
         .sheet(isPresented: $showingUploadQueue) {
             UploadQueueView()
         }
+    }
+
+    /// Whether the client column is the one showing the upload footer. The
+    /// client list renders its footer whenever it's on screen — which in a
+    /// collapsed stack includes being the stack's root — so only the project
+    /// column needs to ask; it takes the footer over when this is false.
+    private var clientColumnCarriesFooter: Bool {
+        #if os(iOS)
+        let isCompact = sizeClass == .compact
+        #else
+        let isCompact = false
+        #endif
+        return UploadActivity.clientColumnCarriesFooter(isCompact: isCompact,
+                                                        columnVisibility: columnVisibility)
     }
 
     private var selectedClient: ClientRef? {
@@ -124,6 +142,13 @@ struct ClientListView: View {
             ServerNameHeader(name: session.profile.name)
             BrowseStatusHeader(browse: browse)
             list
+            // Pinned below the list, Mail-style: present only while the queue
+            // has something to report, and the way into the queue screen.
+            if let summary = UploadActivity.summary(for: session.intake.active) {
+                UploadActivityFooter(summary: summary) {
+                    showingUploadQueue = true
+                }
+            }
         }
         .navigationTitle("Clients")
         .toolbar {
@@ -139,13 +164,6 @@ struct ClientListView: View {
                 }
                 .disabled(browse.isMutating)
             }
-            #if os(iOS)
-            ToolbarItem {
-                UploadQueueButton(activeCount: session.intake.active.count) {
-                    showingUploadQueue = true
-                }
-            }
-            #endif
         }
         .onDisappear { previewTask?.cancel() }
         .confirmationDialog("Delete “\(deletionPrompt?.name ?? "")”?",
@@ -203,7 +221,9 @@ struct ClientListView: View {
             List(selection: $selection) {
                 ForEach(browse.visibleClients) { client in
                     BrowseRow(title: client.displayName, subtitle: nil,
-                              isBusy: previewingID == client.id)
+                              isBusy: previewingID == client.id,
+                              uploadActivity: UploadActivity.rowActivity(session.intake.active,
+                                                                         under: client.prefix))
                         .opacity(client.isHidden ? 0.5 : 1)
                         .tag(client.id)
                         .contextMenu {
@@ -323,6 +343,12 @@ struct ProjectListView: View {
     var browse: BrowseModel
     var client: ClientRef
     @Binding var selection: ProjectRef.ID?
+    /// Shared with the client column: both can raise the one queue sheet
+    /// `BrowseRootView` owns.
+    @Binding var showingUploadQueue: Bool
+    /// Set when the client column isn't on screen to carry its own footer —
+    /// a collapsed sidebar on macOS/iPad, or a drilled-in stack on iPhone.
+    var showsUploadFooter: Bool
 
     @State private var showingNewProject = false
     @State private var newProjectName = ""
@@ -337,6 +363,12 @@ struct ProjectListView: View {
         VStack(spacing: 0) {
             BrowseStatusHeader(browse: browse)
             list
+            if showsUploadFooter,
+               let summary = UploadActivity.summary(for: session.intake.active) {
+                UploadActivityFooter(summary: summary) {
+                    showingUploadQueue = true
+                }
+            }
         }
         // Matches the macOS window title; on iPad/iPhone this is the column's
         // own navigation bar title.
@@ -412,7 +444,9 @@ struct ProjectListView: View {
                     BrowseRow(title: project.manifest.displayName,
                               subtitle: project.manifest.createdAt
                                   .formatted(.dateTime.year().month().day()),
-                              isBusy: previewingID == project.id)
+                              isBusy: previewingID == project.id,
+                              uploadActivity: UploadActivity.rowActivity(session.intake.active,
+                                                                         under: project.prefix))
                         .tag(project.id)
                         .contextMenu {
                             Button("Rename") { beginRename(project) }
@@ -571,40 +605,72 @@ private struct DeletionPromptMessage: View {
     }
 }
 
-/// Toolbar entry to the upload queue, with a count badge while uploads are
-/// active (waiting/uploading/failed — anything still needing attention).
-private struct UploadQueueButton: View {
-    var activeCount: Int
+/// Upload status pinned to the foot of the client list, shaped like Mail's
+/// sync indicator: a thin bar over an action line and a detail line, the whole
+/// block a button that opens the queue.
+///
+/// It exists only while `UploadActivity.summary` has something to report, so
+/// the one moment the queue screen can't be reached from here is when it's
+/// empty. When the sidebar is collapsed, View ▸ Uploads (⌘U) and the per-row
+/// indicators take over.
+private struct UploadActivityFooter: View {
+    var summary: UploadActivity.Summary
     var action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Label("Uploads", systemImage: "arrow.up.circle")
-                .overlay(alignment: .topTrailing) {
-                    if activeCount > 0 {
-                        Text("\(activeCount)")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.red, in: Capsule())
-                            .offset(x: 10, y: -8)
+        VStack(spacing: 0) {
+            Divider()
+            Button(action: action) {
+                VStack(spacing: 3) {
+                    bar
+                    Text(summary.title)
+                        .font(.footnote)
+                        .foregroundStyle(summary.isStalled ? AnyShapeStyle(.red)
+                                                           : AnyShapeStyle(.primary))
+                    if let detail = summary.detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
-        // The visual badge is a tiny overlay; give assistive tech the count
-        // as part of the button's name instead.
-        .accessibilityLabel(activeCount > 0 ? "Uploads, \(activeCount) active" : "Uploads")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel([summary.title, summary.detail].compactMap(\.self).joined(separator: ", "))
+        .accessibilityHint("Opens the upload queue")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    /// Determinate while a clip is on the wire, indeterminate while the queue
+    /// is only waiting, and absent when nothing will move without the user —
+    /// an animating bar over a parked failure would be a lie.
+    @ViewBuilder private var bar: some View {
+        if let progress = summary.progress {
+            ProgressView(value: progress)
+                .progressViewStyle(.linear)
+        } else if !summary.isStalled {
+            ProgressView()
+                .progressViewStyle(.linear)
+        }
     }
 }
 
 /// One browse row: title, optional secondary line, and (on iOS) a trailing
 /// chevron. macOS sidebar/list rows conventionally have no chevron.
-/// `isBusy` shows a small trailing spinner (deletion-preview fetch).
+/// `isBusy` shows a small trailing spinner (deletion-preview fetch);
+/// `uploadActivity` shows the upload-in-progress ring for this row's subtree.
 private struct BrowseRow: View {
     var title: String
     var subtitle: String?
     var isBusy: Bool = false
+    var uploadActivity: UploadActivity.RowActivity? = nil
 
     var body: some View {
         HStack {
@@ -616,13 +682,18 @@ private struct BrowseRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if isBusy {
+            if isBusy || uploadActivity != nil {
                 Spacer()
+            }
+            if isBusy {
                 ProgressView()
                     .controlSize(.small)
             }
+            if let uploadActivity {
+                UploadActivityRing(activity: uploadActivity)
+            }
             #if os(iOS)
-            if !isBusy { Spacer() }
+            if !isBusy, uploadActivity == nil { Spacer() }
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
@@ -630,6 +701,41 @@ private struct BrowseRow: View {
             #endif
         }
         .contentShape(Rectangle())
+    }
+}
+
+/// "Uploads are landing under here": the trailing accessory on a client or
+/// project row whose subtree has work in flight. This is what keeps upload
+/// activity visible when the sidebar — and with it the footer — is collapsed.
+///
+/// Drawn by hand rather than with `ProgressView(value:).progressViewStyle(.circular)`
+/// so the determinate ring renders identically on macOS and iOS; the queued
+/// case (no clip on the wire yet) falls back to the system spinner, since
+/// there is no fraction to draw.
+private struct UploadActivityRing: View {
+    var activity: UploadActivity.RowActivity
+
+    var body: some View {
+        Group {
+            if let fraction = activity.fraction {
+                ZStack {
+                    Circle()
+                        .stroke(.quaternary, lineWidth: 2)
+                    Circle()
+                        // A floor of 2% so a just-started upload still reads
+                        // as a ring rather than an empty circle.
+                        .trim(from: 0, to: max(0.02, min(fraction, 1)))
+                        .stroke(.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90))   // start at 12 o'clock
+                }
+                .frame(width: 14, height: 14)
+                .animation(.easeInOut(duration: 0.2), value: fraction)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .accessibilityLabel(activity.accessibilityLabel)
     }
 }
 
