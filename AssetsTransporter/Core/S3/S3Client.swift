@@ -8,7 +8,22 @@ nonisolated protocol S3Transport: Sendable {
 
 /// Production transport backed by URLSession.
 nonisolated struct URLSessionTransport: S3Transport {
-    var session: URLSession = .shared
+    var session: URLSession = URLSessionTransport.s3Default
+
+    /// A session that never caches responses. `URLSession.shared` would write
+    /// every S3 response into the shared `URLCache` — pointless for ranged
+    /// clip downloads (megabytes of video), and actively harmful because a
+    /// cached entry makes URLSession revalidate later requests to the same URL
+    /// by adding `If-Modified-Since`. Real S3 rejects that header on
+    /// operations that have no conditional form (DELETE, ListObjectsV2) with
+    /// `501 NotImplemented`; ministack ignores it, so this only ever surfaced
+    /// against AWS.
+    static let s3Default: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
 
     func perform(_ request: URLRequest, uploadFile: URL?) async throws -> (Data, HTTPURLResponse) {
         let (data, response): (Data, URLResponse)
@@ -248,6 +263,10 @@ nonisolated struct S3Client: Sendable {
                                headers: [String: String] = [:]) -> URLRequest {
         var request = URLRequest(url: config.url(forKey: key, query: query))
         request.httpMethod = method
+        // Belt and braces with `URLSessionTransport.s3Default`: this also covers
+        // iOS's BackgroundTransport, whose session we don't own. A cache hit
+        // would add conditional headers that S3 answers with 501.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
