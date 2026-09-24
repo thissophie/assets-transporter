@@ -2,13 +2,35 @@ import Foundation
 import Testing
 @testable import AssetsTransporter
 
-/// Environment gate for the ministack integration suite: the tests only run
-/// when `S3_IT_ENDPOINT` is set (e.g. http://localhost:4566), so normal test
-/// runs skip them entirely.
+/// Environment gate and connection settings for the integration suite: the
+/// tests only run when `S3_IT_ENDPOINT` is set (e.g. http://localhost:4566),
+/// so normal test runs skip them entirely. Everything else defaults to the
+/// local ministack, so pointing the suite at a real S3-compatible endpoint is
+/// only a matter of setting the remaining variables.
+///
+/// Set these on the test action of the local, *unshared* `AssetsTransporter
+/// (Live S3)` scheme — that scheme lives in `xcuserdata/`, which git ignores,
+/// so credentials never reach a commit. From the command line, prefix each
+/// name with `TEST_RUNNER_` so `xcodebuild` forwards it to the test host.
 nonisolated enum IntegrationEnv {
-    static var endpoint: String? {
-        ProcessInfo.processInfo.environment["S3_IT_ENDPOINT"]
+    /// Environment lookup that treats a blank value as unset, so an empty
+    /// (not yet filled in) scheme entry behaves exactly like no entry at all.
+    private static func value(_ name: String) -> String? {
+        guard let raw = ProcessInfo.processInfo.environment[name] else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
+
+    static var endpoint: String? { value("S3_IT_ENDPOINT") }
+    static var bucket: String { value("S3_IT_BUCKET") ?? "it-video" }
+    static var accessKey: String { value("S3_IT_ACCESS_KEY") ?? "test" }
+    static var secretKey: String { value("S3_IT_SECRET_KEY") ?? "test" }
+    static var region: String { value("S3_IT_REGION") ?? "us-east-1" }
+
+    /// `path` for ministack/MinIO, `virtualHost` for real AWS S3. Returned raw
+    /// so `makeClient` can reject a misspelling loudly — silently falling back
+    /// to `path` would make a typo look like an endpoint problem.
+    static var rawStyle: String? { value("S3_IT_STYLE") }
 }
 
 /// Transport wrapper that fails requests matching a predicate a fixed number
@@ -41,12 +63,15 @@ private nonisolated final class FlakyTransport: S3Transport, @unchecked Sendable
     }
 }
 
-/// Integration tests against a live S3-compatible server (ministack).
+/// Integration tests against a live S3-compatible server (ministack by default,
+/// or any real endpoint configured through `IntegrationEnv`).
 ///
 /// Run with: `xcodebuild test ... TEST_RUNNER_S3_IT_ENDPOINT=http://localhost:4566`
 /// against a server that has an empty bucket named `it-video` (path style,
 /// any credentials accepted). Each test works under a unique UUID prefix and
-/// best-effort deletes everything it created, so runs never collide.
+/// best-effort deletes everything it created, so runs never collide — and
+/// nothing outside its own prefix is ever listed or deleted, which is what
+/// makes it safe to aim at a bucket that already holds real objects.
 @Suite("ministack integration", .enabled(if: IntegrationEnv.endpoint != nil), .serialized)
 struct IntegrationTests {
 
@@ -57,9 +82,15 @@ struct IntegrationTests {
     private static func makeClient(transport: any S3Transport = URLSessionTransport()) throws -> S3Client {
         let endpointText = try #require(IntegrationEnv.endpoint)
         let endpoint = try #require(URL(string: endpointText))
-        let config = S3Config(endpoint: endpoint, bucket: "it-video",
-                              accessKey: "test", secretKey: "test",
-                              style: .path, region: "us-east-1")
+        var style = S3Config.AddressingStyle.path
+        if let raw = IntegrationEnv.rawStyle {
+            style = try #require(S3Config.AddressingStyle(rawValue: raw),
+                                 "S3_IT_STYLE must be 'path' or 'virtualHost', got '\(raw)'")
+        }
+        let config = S3Config(endpoint: endpoint, bucket: IntegrationEnv.bucket,
+                              accessKey: IntegrationEnv.accessKey,
+                              secretKey: IntegrationEnv.secretKey,
+                              style: style, region: IntegrationEnv.region)
         return S3Client(config: config, transport: transport)
     }
 
