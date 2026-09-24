@@ -6,7 +6,7 @@ import SwiftUI   // IndexSet-based move(fromOffsets:toOffset:) for List.onMove
 /// `ServerSession` for each server that has been opened this run.
 ///
 /// Servers are the app's "documents": each one gets its own window on macOS
-/// (`MyApp` opens a `WindowGroup` scene keyed by profile id) and the server
+/// (`AssetsTransporterApp` opens a `WindowGroup` scene keyed by profile id) and the server
 /// list is the library window. A session is created lazily the first time a
 /// server is opened — or eagerly at launch when the server has local
 /// background work (persisted watch, queued uploads) — and is then kept for

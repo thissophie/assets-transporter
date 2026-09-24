@@ -8,18 +8,26 @@ be felt in real use.
 
 ## Before relying on it in the field
 
-- [ ] **Finish the `MyApp` → `AssetsTransporter` rename — cosmetic bits still old.** Commit
-  `b85a196` renamed the project, app target, scheme and source folder. Done since: `MyAppTests`'
+- [ ] **Finish the `MyApp` → `AssetsTransporter` rename — test target names are the last old bit.**
+  Commit `b85a196` renamed the project, app target, scheme and source folder. Done since: `MyAppTests`'
   `TEST_HOST`/`BUNDLE_LOADER` now point at `AssetsTransporter.app`/`AssetsTransporter`, every test
   file imports `@testable import AssetsTransporter`, both test targets' `DEVELOPMENT_TEAM` matches
   the app's (a mismatch there made the test bundle fail to load with a code-signature Team ID
   error), and a shared `AssetsTransporter.xcscheme` now has a Test action covering both `MyAppTests`
   and `MyAppUITests` (189 tests discovered; unit tests pass, `IntegrationTests` skip without
-  `S3_IT_ENDPOINT`, `MyAppUITests` fails without the E2E ministack — all expected). Still old:
-  the test target names, the `@main` struct and its file `MyApp.swift`, the `MyAppTests` bundle id
-  (`devplaceholder.…MyApp.MyAppTests`), the `MyAppUITests` bundle id (`com.yourcompany.MyAppUITests`),
-  and the app bundle id `com.tamatekapua.AssetTransporter` (no "s"). Fix in Xcode (never by
-  hand-editing `project.pbxproj`) if these are worth chasing further.
+  `S3_IT_ENDPOINT`, `MyAppUITests` fails without the E2E ministack — all expected). Also done
+  (2026-09-24): the `@main` struct and its file are now `AssetsTransporterApp`/`AssetsTransporterApp.swift`
+  (was `MyApp`/`MyApp.swift`); the app bundle id is `com.tamatekapua.AssetsTransporter` (the missing
+  "s" is fixed); the test bundle ids are `com.tamatekapua.AssetsTransporterTests` and
+  `com.tamatekapua.AssetsTransporterUITests` (were the auto-generated `devplaceholder.…MyApp.MyAppTests`
+  and the template default `com.yourcompany.MyAppUITests`). The Keychain access-group entitlement
+  (`AssetsTransporter.entitlements`) was deliberately left as the literal old string —
+  it's independent of the bundle id and changing it would orphan any existing install's saved
+  server credentials for no benefit. Still old: the test target names themselves (`MyAppTests`,
+  `MyAppUITests`) and the UI test's class name/file (`MyAppUITests.swift`) — there is no
+  scriptable "rename target" operation (it's a full Xcode project-model rename covering the
+  scheme, module name, and generated support files at once), so this last piece needs Xcode's
+  own target ▸ Rename in the UI (never by hand-editing `project.pbxproj`).
 
 - [ ] **Verify iPhone background uploads on a real device.** The background
   `URLSession` transport and the relaunch handler (`AppDelegate` in

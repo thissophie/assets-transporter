@@ -118,7 +118,7 @@ struct ServerListView: View {
 
     private func open(_ id: ServerProfile.ID) {
         #if os(macOS)
-        openWindow(id: MyApp.serverWindowID, value: id)
+        openWindow(id: AssetsTransporterApp.serverWindowID, value: id)
         #else
         onOpen?(id)
         #endif

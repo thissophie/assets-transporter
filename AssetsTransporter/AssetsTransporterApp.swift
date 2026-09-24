@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 /// window). Window state restoration brings the open servers back on
 /// relaunch. iOS is single-scene: `ContentView` swaps between the list and
 /// the chosen server.
-@main struct MyApp: App {
+@main struct AssetsTransporterApp: App {
     @State private var model = AppModel()
     #if os(iOS)
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate

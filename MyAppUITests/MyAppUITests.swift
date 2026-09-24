@@ -16,7 +16,7 @@ import XCTest
 
 final class MyAppUITests: XCTestCase {
 
-    static let appBundleID = "com.tamatekapua.AssetTransporter"
+    static let appBundleID = "com.tamatekapua.AssetsTransporter"
     static let bucketBase = "http://localhost:4566/it-video"
     /// The server profile the tests create for themselves.
     static let e2eServerName = "E2E ministack"
