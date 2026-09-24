@@ -80,7 +80,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                     .environment(model)
             }
         }
-        .defaultSize(width: 1000, height: 640)
+        .defaultSize(width: 800, height: 640)
         #else
         WindowGroup {
             ContentView()
