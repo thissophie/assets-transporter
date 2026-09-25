@@ -156,7 +156,7 @@ struct BrowseRootView: View {
         } else if browse.isLoading {
             ProgressView()
         } else {
-            NoClientsYetView(browse: browse)
+            NoClientsYetView(browse: browse, selection: $selectedClientID)
         }
     }
 
@@ -235,7 +235,7 @@ struct ClientListView: View {
             DeletionPromptMessage(prompt: prompt)
         }
         .modifier(NewClientAlert(browse: browse, isPresented: $showingNewClient,
-                                 name: $newClientName))
+                                 name: $newClientName, selection: $selection))
         .alert("Rename Client", isPresented: renameAlertPresented, presenting: renameTarget) { client in
             TextField("Client name", text: $renameText)
             Button("Rename") {
@@ -253,7 +253,7 @@ struct ClientListView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                NoClientsYetView(browse: browse)
+                NoClientsYetView(browse: browse, selection: $selection)
             }
         } else {
             List(selection: $selection) {
@@ -438,8 +438,11 @@ struct ProjectListView: View {
                 let name = newProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !name.isEmpty else { return }
                 Task {
-                    await browse.createProject(name: name, in: client.prefix,
-                                               writer: session.writer, reader: session.reader)
+                    if let project = await browse.createProject(name: name, in: client.prefix,
+                                                                writer: session.writer,
+                                                                reader: session.reader) {
+                        selection = project.id
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -601,6 +604,8 @@ private struct NewClientAlert: ViewModifier {
     var browse: BrowseModel
     @Binding var isPresented: Bool
     @Binding var name: String
+    /// The client selection; the new client becomes selected once created.
+    @Binding var selection: ClientRef.ID?
 
     func body(content: Content) -> some View {
         content.alert("New Client", isPresented: $isPresented) {
@@ -608,7 +613,12 @@ private struct NewClientAlert: ViewModifier {
             Button("Create") {
                 let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
-                Task { await browse.createClient(name: trimmed, writer: session.writer, reader: session.reader) }
+                Task {
+                    if let client = await browse.createClient(name: trimmed, writer: session.writer,
+                                                              reader: session.reader) {
+                        selection = client.id
+                    }
+                }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -620,6 +630,7 @@ private struct NewClientAlert: ViewModifier {
 struct NoClientsYetView: View {
     @Environment(ServerSession.self) private var session
     var browse: BrowseModel
+    @Binding var selection: ClientRef.ID?
 
     @State private var showingNewClient = false
     @State private var newClientName = ""
@@ -642,7 +653,7 @@ struct NoClientsYetView: View {
         }
         .refreshable { await browse.refreshClients(reader: session.reader) }
         .modifier(NewClientAlert(browse: browse, isPresented: $showingNewClient,
-                                 name: $newClientName))
+                                 name: $newClientName, selection: $selection))
     }
 }
 

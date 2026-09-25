@@ -81,19 +81,29 @@ import Observation
 
     // MARK: - Mutations (write, then refresh the affected level)
 
-    func createClient(name: String, writer: BucketWriter, reader: BucketReader) async {
+    /// Returns the new client, or nil if the write failed, so the caller can
+    /// select it.
+    @discardableResult
+    func createClient(name: String, writer: BucketWriter, reader: BucketReader) async -> ClientRef? {
+        var created: ClientRef?
         await mutate {
-            _ = try await writer.createClient(name: name)
+            created = try await writer.createClient(name: name)
             await self.refreshClients(reader: reader)
         }
+        return created
     }
 
+    /// Returns the new project, or nil if the write failed, so the caller can
+    /// select it.
+    @discardableResult
     func createProject(name: String, in clientPrefix: String,
-                       writer: BucketWriter, reader: BucketReader) async {
+                       writer: BucketWriter, reader: BucketReader) async -> ProjectRef? {
+        var created: ProjectRef?
         await mutate {
-            _ = try await writer.createProject(name: name, in: clientPrefix)
+            created = try await writer.createProject(name: name, in: clientPrefix)
             await self.refreshProjects(reader: reader, clientPrefix: clientPrefix)
         }
+        return created
     }
 
     func renameClient(_ ref: ClientRef, to name: String,
