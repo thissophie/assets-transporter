@@ -273,9 +273,11 @@ struct ClientListView: View {
                                 .disabled(deletionDisabled)
                         }
                         .swipeActions(edge: .trailing) {
-                            Button("Delete…", role: .destructive) { beginDelete(client) }
+                            Button("Delete…", systemImage: "trash", role: .destructive) { beginDelete(client) }
+                                .labelStyle(.iconOnly)
                                 .disabled(deletionDisabled)
-                            Button("Rename") { beginRename(client) }
+                            Button("Rename", systemImage: "pencil") { beginRename(client) }
+                                .labelStyle(.iconOnly)
                                 .disabled(browse.isMutating)
                         }
                 }
@@ -502,9 +504,11 @@ struct ProjectListView: View {
                                 .disabled(deletionDisabled)
                         }
                         .swipeActions(edge: .trailing) {
-                            Button("Delete…", role: .destructive) { beginDelete(project) }
+                            Button("Delete…", systemImage: "trash", role: .destructive) { beginDelete(project) }
+                                .labelStyle(.iconOnly)
                                 .disabled(deletionDisabled)
-                            Button("Rename") { beginRename(project) }
+                            Button("Rename", systemImage: "pencil") { beginRename(project) }
+                                .labelStyle(.iconOnly)
                                 .disabled(browse.isMutating)
                         }
                 }
