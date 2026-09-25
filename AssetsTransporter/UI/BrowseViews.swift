@@ -32,7 +32,8 @@ struct BrowseRootView: View {
             ClientListView(browse: browse,
                            selection: $selectedClientID,
                            showingUploadQueue: $showingUploadQueue,
-                           onShowServers: onShowServers)
+                           onShowServers: onShowServers,
+                           showsNewClientButton: sidebarOnScreen)
             // Narrower than this and the sidebar's titlebar can't fit the
             // New Client button beside the traffic lights and sidebar toggle,
             // so macOS pushes it into the window's trailing overflow menu.
@@ -45,8 +46,8 @@ struct BrowseRootView: View {
                                     showingUploadQueue: $showingUploadQueue,
                                     showsUploadFooter: !clientColumnCarriesFooter)
                 } else {
-                    Text("Select a client")
-                        .foregroundStyle(.secondary)
+                    noClientSelected
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         // Without toolbar content this column gets no
                         // titlebar section of its own and the detail
                         // column's toolbar spills across it to the window's
@@ -68,7 +69,10 @@ struct BrowseRootView: View {
                     // Also keeps the detail column's toolbar section claimed,
                     // so the project column's New Project button doesn't
                     // drift to the window's trailing edge on macOS.
-                    NoProjectSelectedView()
+                    // Only prompts when there are projects to pick from; with
+                    // no client, or a client with no projects, the column to
+                    // its left already says what's missing.
+                    NoProjectSelectedView(showsPlaceholder: selectedClientHasProjects)
                 }
             }
             #if os(macOS)
@@ -105,13 +109,24 @@ struct BrowseRootView: View {
     /// collapsed stack includes being the stack's root — so only the project
     /// column needs to ask; it takes the footer over when this is false.
     private var clientColumnCarriesFooter: Bool {
+        UploadActivity.clientColumnCarriesFooter(isCompact: isCompact,
+                                                 columnVisibility: columnVisibility)
+    }
+
+    /// Whether the client list's toolbar belongs on screen. A collapsed
+    /// sidebar on macOS/iPad leaves its New Client button stranded in the
+    /// window toolbar, so it goes with the sidebar. In a compact stack the
+    /// client list's toolbar only shows while the list itself does.
+    private var sidebarOnScreen: Bool {
+        isCompact || columnVisibility == .all
+    }
+
+    private var isCompact: Bool {
         #if os(iOS)
-        let isCompact = sizeClass == .compact
+        sizeClass == .compact
         #else
-        let isCompact = false
+        false
         #endif
-        return UploadActivity.clientColumnCarriesFooter(isCompact: isCompact,
-                                                        columnVisibility: columnVisibility)
     }
 
     private var selectedClient: ClientRef? {
@@ -121,6 +136,28 @@ struct BrowseRootView: View {
     private var selectedProject: ProjectRef? {
         guard let clientPrefix = selectedClientID, let projectID = selectedProjectID else { return nil }
         return browse.projects(for: clientPrefix).first { $0.id == projectID }
+    }
+
+    private var selectedClientHasProjects: Bool {
+        guard let client = selectedClient else { return false }
+        return !browse.projects(for: client.prefix).isEmpty
+    }
+
+    /// The project column with no client picked. With no clients at all it
+    /// stays blank while the client list is on screen to say so, and stands
+    /// in with that list's "No clients yet" prompt when it isn't.
+    @ViewBuilder private var noClientSelected: some View {
+        if !browse.clients.isEmpty {
+            ContentUnavailableView("No client selected", systemImage: "person.2",
+                                   description: Text("Select a client to see its projects"))
+        } else if clientColumnCarriesFooter {
+            // i.e. the client list is on screen beside this column.
+            Color.clear
+        } else if browse.isLoading {
+            ProgressView()
+        } else {
+            NoClientsYetView(browse: browse)
+        }
     }
 
     /// View ▸ Refresh: reloads every level this window is showing — the
@@ -145,6 +182,8 @@ struct ClientListView: View {
     @Binding var selection: ClientRef.ID?
     @Binding var showingUploadQueue: Bool
     var onShowServers: (() -> Void)? = nil
+    /// Off while the sidebar is collapsed; see `BrowseRootView.sidebarOnScreen`.
+    var showsNewClientButton = true
 
     @State private var showingNewClient = false
     @State private var newClientName = ""
@@ -175,12 +214,14 @@ struct ClientListView: View {
                     Button("Servers", systemImage: "chevron.backward", action: onShowServers)
                 }
             }
-            ToolbarItem {
-                Button("New Client", systemImage: "rectangle.stack.badge.plus") {
-                    newClientName = ""
-                    showingNewClient = true
+            if showsNewClientButton {
+                ToolbarItem {
+                    Button("New Client", systemImage: "rectangle.stack.badge.plus") {
+                        newClientName = ""
+                        showingNewClient = true
+                    }
+                    .disabled(browse.isMutating)
                 }
-                .disabled(browse.isMutating)
             }
         }
         .onDisappear { previewTask?.cancel() }
@@ -193,15 +234,8 @@ struct ClientListView: View {
         } message: { prompt in
             DeletionPromptMessage(prompt: prompt)
         }
-        .alert("New Client", isPresented: $showingNewClient) {
-            TextField("Client name", text: $newClientName)
-            Button("Create") {
-                let name = newClientName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty else { return }
-                Task { await browse.createClient(name: name, writer: session.writer, reader: session.reader) }
-            }
-            Button("Cancel", role: .cancel) {}
-        }
+        .modifier(NewClientAlert(browse: browse, isPresented: $showingNewClient,
+                                 name: $newClientName))
         .alert("Rename Client", isPresented: renameAlertPresented, presenting: renameTarget) { client in
             TextField("Client name", text: $renameText)
             Button("Rename") {
@@ -219,21 +253,7 @@ struct ClientListView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                // In a ScrollView so pull-to-refresh is available from the
-                // empty state — exactly where a failed or stale load needs a
-                // retry; a bare ContentUnavailableView has no scroll surface.
-                ScrollView {
-                    ContentUnavailableView {
-                        Label("No clients yet", systemImage: "person.2")
-                    } actions: {
-                        Button("Add Client") {
-                            newClientName = ""
-                            showingNewClient = true
-                        }
-                    }
-                        .containerRelativeFrame([.horizontal, .vertical])
-                }
-                .refreshable { await refresh() }
+                NoClientsYetView(browse: browse)
             }
         } else {
             List(selection: $selection) {
@@ -449,9 +469,15 @@ struct ProjectListView: View {
                 // Same shape as the empty client list: scrollable so a failed
                 // or stale load can be retried by pulling down.
                 ScrollView {
-                    ContentUnavailableView("No projects yet",
-                                           systemImage: "folder",
-                                           description: Text("Tap + to create one"))
+                    ContentUnavailableView {
+                        Label("No projects yet", systemImage: "folder")
+                    } actions: {
+                        Button("Add Project") {
+                            newProjectName = ""
+                            showingNewProject = true
+                        }
+                        .disabled(browse.isMutating)
+                    }
                         .containerRelativeFrame([.horizontal, .vertical])
                 }
                 .refreshable { await refresh() }
@@ -567,6 +593,58 @@ struct ProjectListView: View {
 }
 
 // MARK: - Shared pieces
+
+/// The "New Client" name prompt, shared by the client column's toolbar button
+/// and every "Add Client" empty state.
+private struct NewClientAlert: ViewModifier {
+    @Environment(ServerSession.self) private var session
+    var browse: BrowseModel
+    @Binding var isPresented: Bool
+    @Binding var name: String
+
+    func body(content: Content) -> some View {
+        content.alert("New Client", isPresented: $isPresented) {
+            TextField("Client name", text: $name)
+            Button("Create") {
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                Task { await browse.createClient(name: trimmed, writer: session.writer, reader: session.reader) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+/// The empty-bucket prompt: shown by the client column, and by the project
+/// column in its place when the sidebar is collapsed.
+struct NoClientsYetView: View {
+    @Environment(ServerSession.self) private var session
+    var browse: BrowseModel
+
+    @State private var showingNewClient = false
+    @State private var newClientName = ""
+
+    var body: some View {
+        // In a ScrollView so pull-to-refresh is available from the empty
+        // state — exactly where a failed or stale load needs a retry; a bare
+        // ContentUnavailableView has no scroll surface.
+        ScrollView {
+            ContentUnavailableView {
+                Label("No clients yet", systemImage: "person.2")
+            } actions: {
+                Button("Add Client") {
+                    newClientName = ""
+                    showingNewClient = true
+                }
+                .disabled(browse.isMutating)
+            }
+                .containerRelativeFrame([.horizontal, .vertical])
+        }
+        .refreshable { await browse.refreshClients(reader: session.reader) }
+        .modifier(NewClientAlert(browse: browse, isPresented: $showingNewClient,
+                                 name: $newClientName))
+    }
+}
 
 /// Composes the browsing context title — "Client – Server" — used for the
 /// macOS window title and the projects column. Either part can be missing

@@ -1186,13 +1186,22 @@ private struct ClipEditSheet: View {
 /// The detail column with no project selected: the same empty-state
 /// presentation as a project with no clips, under a disabled copy of
 /// `ProjectDetailView`'s toolbar so the buttons don't vanish and reappear as
-/// the selection changes.
+/// the selection changes. With `showsPlaceholder` off (the client has no
+/// projects to select) the column is blank but keeps that toolbar.
 struct NoProjectSelectedView: View {
+    var showsPlaceholder = true
+
     var body: some View {
-        ContentUnavailableView("No project selected", systemImage: "folder",
-                               description: Text("Select a project to see its clips"))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .toolbar { toolbarContent }
+        Group {
+            if showsPlaceholder {
+                ContentUnavailableView("No project selected", systemImage: "folder",
+                                       description: Text("Select a project to see its clips"))
+            } else {
+                Color.clear
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .toolbar { toolbarContent }
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
