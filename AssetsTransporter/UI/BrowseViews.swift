@@ -33,24 +33,42 @@ struct BrowseRootView: View {
                            selection: $selectedClientID,
                            showingUploadQueue: $showingUploadQueue,
                            onShowServers: onShowServers)
+            // Narrower than this and the sidebar's titlebar can't fit the
+            // New Client button beside the traffic lights and sidebar toggle,
+            // so macOS pushes it into the window's trailing overflow menu.
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220)
         } content: {
-            if let client = selectedClient {
-                ProjectListView(browse: browse, client: client,
-                                selection: $selectedProjectID,
-                                showingUploadQueue: $showingUploadQueue,
-                                showsUploadFooter: !clientColumnCarriesFooter)
-            } else {
-                Text("Select a client")
-                    .foregroundStyle(.secondary)
+            Group {
+                if let client = selectedClient {
+                    ProjectListView(browse: browse, client: client,
+                                    selection: $selectedProjectID,
+                                    showingUploadQueue: $showingUploadQueue,
+                                    showsUploadFooter: !clientColumnCarriesFooter)
+                } else {
+                    Text("Select a client")
+                        .foregroundStyle(.secondary)
+                        // Without toolbar content this column gets no
+                        // titlebar section of its own and the detail
+                        // column's toolbar spills across it to the window's
+                        // trailing edge, so stand in a disabled New Project.
+                        .toolbar {
+                            Button("New Project", systemImage: "folder.badge.plus") {}
+                                .disabled(true)
+                        }
+                }
             }
+            // Room for the "Client – Server" title beside the New Project
+            // button without truncating it at ordinary name lengths.
+            .navigationSplitViewColumnWidth(min: 240, ideal: 280)
         } detail: {
             Group {
                 if let project = selectedProject {
                     ProjectDetailView(project: project, refreshTrigger: refreshTrigger)
                 } else {
-                    Text("Select a project")
-                        .foregroundStyle(.secondary)
-                        .padding()
+                    // Also keeps the detail column's toolbar section claimed,
+                    // so the project column's New Project button doesn't
+                    // drift to the window's trailing edge on macOS.
+                    NoProjectSelectedView()
                 }
             }
             #if os(macOS)
@@ -158,7 +176,7 @@ struct ClientListView: View {
                 }
             }
             ToolbarItem {
-                Button("New Client", systemImage: "plus") {
+                Button("New Client", systemImage: "rectangle.stack.badge.plus") {
                     newClientName = ""
                     showingNewClient = true
                 }
@@ -375,7 +393,7 @@ struct ProjectListView: View {
         .navigationTitle(BrowseTitle.clientAndServer(client: client.displayName,
                                                      serverName: session.profile.name))
         .toolbar {
-            Button("New Project", systemImage: "plus") {
+            Button("New Project", systemImage: "folder.badge.plus") {
                 newProjectName = ""
                 showingNewProject = true
             }

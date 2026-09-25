@@ -36,6 +36,10 @@ struct ProjectDetailView: View {
     @State private var playingClip: Clip?
     @State private var clipsToDelete: [Clip]?
     @State private var isDeletingClip = false
+    /// What the toolbar Delete button's confirmation popover will delete:
+    /// every clip when clicked with nothing selected, otherwise the
+    /// selection as it was at the click. nil while the popover is hidden.
+    @State private var toolbarDeletion: ToolbarDeletion?
     /// Keys queued for the download folder picker: a set downloads just those
     /// clips; nil downloads the whole project (and writes the project.json
     /// copy). Always set right before the picker is presented.
@@ -371,52 +375,117 @@ struct ProjectDetailView: View {
 
     // MARK: - Toolbar
 
+    /// Intake actions (add/watch) sit on the leading edge; a flexible spacer
+    /// pushes the outgoing actions (download/delete) to the trailing edge.
+    /// Keep `NoProjectSelectedView.toolbarContent` in step with this layout.
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        // Downloads the selection when one exists, the whole project otherwise.
-        ToolbarItem {
+        ToolbarItemGroup(placement: ProjectToolbar.intakePlacement) {
+            #if os(macOS)
+            Button("Add Clips", systemImage: "icloud.and.arrow.up") {
+                showingFileImporter = true
+            }
+            .disabled(isExpandingDrop)
+            watchMenu
+            #else
+            Button("Files", systemImage: "icloud.and.arrow.up") {
+                showingFileImporter = true
+            }
+            PhotosPicker(selection: $photoSelection, matching: .videos,
+                         photoLibrary: .shared()) {
+                Label("Add from Photos", systemImage: "photo.badge.plus")
+            }
+            .disabled(isImportingPhotos)
+            #endif
+        }
+        ToolbarSpacer(.flexible)
+        ToolbarItemGroup {
+            // Both act on the selection when one exists, every clip otherwise.
             Button(selection.isEmpty ? "Download…" : "Download Selected…",
                    systemImage: "arrow.down.circle") {
                 pendingDownloadKeys = selection.isEmpty ? nil : selection
                 showingDownloadFolderPicker = true
             }
             .disabled(clips.isEmpty || download != nil)
+            deleteToolbarButton
         }
-        if !selection.isEmpty {
-            ToolbarItem {
-                Button("Delete Selected", systemImage: "trash") {
-                    clipsToDelete = selectedClips(selection)
-                }
-                .disabled(clipDeletionDisabled)
-            }
-        }
-        #if os(macOS)
-        ToolbarItem {
-            Button("Add Clips", systemImage: "plus") {
-                showingFileImporter = true
-            }
-            .disabled(isExpandingDrop)
-        }
-        ToolbarItem {
-            watchMenu
-        }
-        #else
-        ToolbarItem {
-            PhotosPicker(selection: $photoSelection, matching: .videos,
-                         photoLibrary: .shared()) {
-                Label("Add from Photos", systemImage: "photo.badge.plus")
-            }
-            .disabled(isImportingPhotos)
-        }
-        ToolbarItem {
-            Button("Files", systemImage: "folder.badge.plus") {
-                showingFileImporter = true
-            }
-        }
+        #if os(iOS)
+        ToolbarSpacer(.fixed)
         // Edit mode provides the standard multi-select checkmarks on iOS.
         ToolbarItem {
             EditButton()
         }
         #endif
+    }
+
+    private enum ToolbarDeletion {
+        case all
+        case selected([Clip])
+    }
+
+    /// Always visible. Confirms through a popover either way: with a
+    /// selection it deletes those clips; with none it deletes every stored
+    /// clip — the project and its manifest are kept.
+    private var deleteToolbarButton: some View {
+        Button(selection.isEmpty ? "Delete All Clips…" : "Delete Selected…",
+               systemImage: "trash") {
+            toolbarDeletion = selection.isEmpty ? .all : .selected(selectedClips(selection))
+        }
+        .disabled(clips.isEmpty || clipDeletionDisabled)
+        .popover(isPresented: toolbarDeletionPresented, arrowEdge: .bottom) {
+            if let toolbarDeletion {
+                deletePopover(for: toolbarDeletion)
+            }
+        }
+    }
+
+    private var toolbarDeletionPresented: Binding<Bool> {
+        Binding(get: { toolbarDeletion != nil },
+                set: { if !$0 { toolbarDeletion = nil } })
+    }
+
+    private func deletePopover(for deletion: ToolbarDeletion) -> some View {
+        // Text rather than String so the ^[…](inflect:) markup is applied.
+        let title: Text
+        let message: Text
+        let confirmLabel: LocalizedStringKey
+        let targets: [Clip]
+        switch deletion {
+        case .all:
+            title = Text("Delete all ^[\(clips.count) clip](inflect: true)?")
+            message = Text("The project “\(project.manifest.displayName)” itself is kept. This cannot be undone.")
+            confirmLabel = "Delete All"
+            targets = clips
+        case .selected(let selected):
+            title = selected.count == 1
+                ? Text("Delete “\(selected[0].sidecar.displayName)”?")
+                : Text("Delete ^[\(selected.count) clip](inflect: true)?")
+            message = Text("This cannot be undone.")
+            confirmLabel = "Delete"
+            targets = selected
+        }
+        return VStack(alignment: .leading, spacing: 12) {
+            title
+                .font(.headline)
+            message
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { toolbarDeletion = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button(confirmLabel, role: .destructive) {
+                    toolbarDeletion = nil
+                    deleteClips(targets)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            }
+        }
+        .padding()
+        .frame(width: 300)
+        // Stay a popover on iPhone rather than adapting to a sheet.
+        .presentationCompactAdaptation(.popover)
     }
 
     // MARK: - Intake plumbing
@@ -1111,6 +1180,66 @@ private struct ClipEditSheet: View {
             }
             isSaving = false
         }
+    }
+}
+
+/// The detail column with no project selected: the same empty-state
+/// presentation as a project with no clips, under a disabled copy of
+/// `ProjectDetailView`'s toolbar so the buttons don't vanish and reappear as
+/// the selection changes.
+struct NoProjectSelectedView: View {
+    var body: some View {
+        ContentUnavailableView("No project selected", systemImage: "folder",
+                               description: Text("Select a project to see its clips"))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar { toolbarContent }
+    }
+
+    @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: ProjectToolbar.intakePlacement) {
+            #if os(macOS)
+            Button("Add Clips", systemImage: "icloud.and.arrow.up") {}
+                .disabled(true)
+            Menu {
+            } label: {
+                Label("Watch Folder", systemImage: "eye")
+            }
+            .disabled(true)
+            #else
+            Button("Files", systemImage: "icloud.and.arrow.up") {}
+                .disabled(true)
+            Button("Add from Photos", systemImage: "photo.badge.plus") {}
+                .disabled(true)
+            #endif
+        }
+        ToolbarSpacer(.flexible)
+        ToolbarItemGroup {
+            Button("Download…", systemImage: "arrow.down.circle") {}
+                .disabled(true)
+            Button("Delete All Clips…", systemImage: "trash") {}
+                .disabled(true)
+        }
+        #if os(iOS)
+        ToolbarSpacer(.fixed)
+        ToolbarItem {
+            EditButton()
+                .disabled(true)
+        }
+        #endif
+    }
+}
+
+enum ProjectToolbar {
+    /// Where the intake group goes. On macOS the detail column's items flow
+    /// from its leading edge, so the default placement plus the flexible
+    /// spacer that follows is enough; iOS navigation bars put default items
+    /// on the trailing side, so the group asks for the leading one.
+    static var intakePlacement: ToolbarItemPlacement {
+        #if os(macOS)
+        .automatic
+        #else
+        .topBarLeading
+        #endif
     }
 }
 
