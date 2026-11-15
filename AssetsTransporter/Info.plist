@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>The camera is used only to read the QR code that sets up a new server. No images are stored or sent anywhere.</string>
+	<key>NSCameraUseContinuityCameraDeviceType</key>
+	<true/>
+</dict>
 </plist>

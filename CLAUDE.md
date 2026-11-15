@@ -137,9 +137,22 @@ introduce a central index or rewrite a sibling's manifest. Timestamps are ISO860
 - `UI/IntakeModel` — stage (copy into `Application Support/Staging`, app-global) → probe →
   enqueue → run sequentially through `ServerSession.engine`, with per-session auto-retry backoff.
   Per server, single `onClipsChanged` slot.
+- `Core/ConfigureLink` — setting up a server from the companion service
+  (`assetstransporter-svc`, contract in its `docs/CONFIGURE_API.md`; build to that document and
+  change it first if behaviour must change). `ConfigureLink(scanned:)` accepts only
+  `https://<host>/configure/<id>?sig=<jwt>` (`http` just for `localhost`/`127.0.0.1`) and treats
+  the JWT as opaque; `ConfigureClient` GETs it with `Accept: application/json` through the
+  `ConfigureTransport` seam, maps each status to the contract's exact message (`ConfigureError`),
+  rejects any `version` but 1, and refuses cross-origin redirects (`URLSessionConfigureTransport`'s
+  delegate; `ConfigureClient.allowsRedirect`); `ServerFormValues` maps the payload into the form.
 - `UI/ServerListView` (library: open/add/edit/delete/reorder), `ServerEditorView` (create/edit
-  sheet with Test Connection; `SettingsValidation` lives here), `ServerWindowView` (resolves the
-  session for a server id and injects it as `@Environment(ServerSession.self)`).
+  sheet with Test Connection; `SettingsValidation` lives here; for *new* servers only, a Quick
+  Setup section — Scan QR Code / Paste Link — that fetches a configure link and fills the form,
+  never saving by itself), `QRScannerView` (camera sheet on both platforms:
+  `QRCaptureController` runs the `AVCaptureSession` off-main with metadata `.qr` output, plus a
+  throttled Vision pass on macOS; `QRScannerModel` handles permission / no camera / fire-once),
+  `ServerWindowView` (resolves the session for a server id and injects it as
+  `@Environment(ServerSession.self)`).
 - `UI/BrowseModel`, `BrowseViews`, `ProjectDetailView`, `UploadQueueView` — all read the
   `ServerSession` from the environment; navigation is `NavigationSplitView` on macOS, stack on
   iOS; every list supports pull-to-refresh. Downloads are whole-project or a multi-selection of
@@ -170,14 +183,21 @@ introduce a central index or rewrite a sibling's manifest. Timestamps are ISO860
 **Testing seams.** `S3Transport` is the injection point: `RecordingTransport` in
 `S3ClientTests.swift` returns canned responses and captures requests; `FlakyTransport` in
 `IntegrationTests.swift` injects failures to prove resume. `UploadJobStoring` lets engine tests
-use an in-memory store. `BucketWriter.now` is an injectable clock. Add new network-dependent
+use an in-memory store. `BucketWriter.now` is an injectable clock. `ConfigureTransport` is the seam for configure-link
+fetches (`StubConfigureTransport` in `ConfigureLinkTests.swift`; `ConfigureStubProtocol` drives
+the real `URLSessionConfigureTransport` through a `URLProtocol` to prove redirects are refused). Add new network-dependent
 logic behind these seams rather than hitting `URLSession` directly.
 
 ## Conventions worth knowing
 
 - Commit messages follow `type: summary` (`feat:`, `fix:`, `test:`, `chore:`, `docs:`).
-- Sandbox is on with outgoing network and read-write user-selected files; source files opened
-  via pickers are held as security-scoped bookmarks on the `UploadJob`.
+- Sandbox is on with outgoing network, read-write user-selected files and the camera (QR setup);
+  source files opened via pickers are held as security-scoped bookmarks on the `UploadJob`. These
+  entitlements come from build settings (`ENABLE_APP_SANDBOX`, `ENABLE_OUTGOING_NETWORK_CONNECTIONS`,
+  `ENABLE_USER_SELECTED_FILES`, `ENABLE_RESOURCE_ACCESS_CAMERA`), which apply only to the macOS
+  build; `AssetsTransporter.entitlements` is shared by both platforms and holds only the Keychain
+  access group, so don't put macOS-only `com.apple.security.*` keys there.
+  `NSCameraUsageDescription` lives in `AssetsTransporter/Info.plist` (merged with the generated one).
 - `MediaTypes` knows only mov/mp4/m4v/avi/mxf; anything else uploads as octet-stream.
 - The XCUITest scenario creates and uses its own server named `E2E ministack`
   (`localhost:4566`, bucket `it-video`); it never edits other saved servers, so running it no

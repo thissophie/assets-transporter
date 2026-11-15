@@ -51,6 +51,18 @@ be felt in real use.
   add the real endpoint as its own server; a stale `~/WatchDrop` watch config
   on the migrated server will warn until stopped or re-pointed.
 
+- [ ] **Try QR setup by hand with a real camera, on iPhone and on a Mac.** The
+  configure-link core (`Core/ConfigureLink.swift`) is unit-tested, and the
+  scanner (`UI/QRScannerView.swift`) builds for both platforms, but nobody has
+  yet held a QR code up to it. Check: the permission prompt and the denied /
+  Open Settings path; a Mac without a camera shows "No Camera Available";
+  a non-configure QR code shows the hint and scanning continues; a valid code
+  closes the scanner once and fills the form; the preview stays upright when an
+  iPhone rotates; the session stops (camera light off) when the sheet closes.
+  On macOS QR codes come from both `AVCaptureMetadataOutput` and a Vision pass;
+  if metadata proves reliable there, the Vision pass could go. End to end needs
+  a local `assetstransporter-svc` (`http://localhost:…` links are accepted).
+
 ## Features deferred from the plan
 
 - [x] **Per-clip download selection.** Done 2026-09-22: row multi-select with
