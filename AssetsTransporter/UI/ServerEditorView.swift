@@ -66,9 +66,20 @@ struct ServerEditorView: View {
     @State private var isTesting = false
     @State private var populated = false
 
+    // Quick setup from a configure link (new servers only).
+    @State private var showingScanner = false
+    @State private var showingPasteField = false
+    @State private var pastedLink = ""
+    @State private var linkStatus: LinkStatus = .idle
+    @State private var fetchTask: Task<Void, Never>?
+
     var body: some View {
         NavigationStack {
             Form {
+                if existing == nil {
+                    quickSetupSection
+                }
+
                 Section("Name") {
                     TextField("Server name", text: $name, prompt: Text("Production"))
                 }
@@ -122,10 +133,150 @@ struct ServerEditorView: View {
                 }
             }
             .onAppear(perform: populateOnce)
+            .onDisappear { fetchTask?.cancel() }
+            .sheet(isPresented: $showingScanner) {
+                QRScannerView(
+                    onFound: { link in
+                        showingScanner = false
+                        fetch(link)
+                    },
+                    onPasteInstead: {
+                        showingScanner = false
+                        showingPasteField = true
+                    })
+            }
         }
         #if os(macOS)
-        .frame(minWidth: 460, minHeight: 440)
+        .frame(minWidth: 460, minHeight: existing == nil ? 560 : 440)
         #endif
+    }
+
+    // MARK: - Quick setup
+
+    /// Where a configure-link fetch stands.
+    private enum LinkStatus: Equatable {
+        case idle
+        case fetching
+        case failed(String)
+        case filled(host: String)
+    }
+
+    /// "Scan QR Code" / "Paste Link", above the fields so they're seen
+    /// before any typing. Either one only fills the form; Save is still the
+    /// user's.
+    private var quickSetupSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                Button("Scan QR Code", systemImage: "qrcode.viewfinder") {
+                    showingScanner = true
+                }
+                .frame(maxWidth: .infinity)
+                Button("Paste Link", systemImage: "link") {
+                    showingPasteField.toggle()
+                }
+                .frame(maxWidth: .infinity)
+            }
+            // Bordered buttons keep each one its own tap target inside a
+            // Form row on iOS (a plain row fires every button in it).
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(linkStatus == .fetching)
+
+            if showingPasteField {
+                HStack {
+                    TextField("Configure link", text: $pastedLink,
+                              prompt: Text("https://…/configure/…?sig=…"))
+                        .labelsHidden()
+                        .onSubmit(fetchPastedLink)
+                        #if os(iOS)
+                        .keyboardType(.URL)
+                        .submitLabel(.go)
+                        #endif
+                    // Reads the clipboard only when pressed, so iOS never
+                    // shows its paste prompt unasked.
+                    PasteButton(payloadType: String.self) { strings in
+                        guard let first = strings.first else { return }
+                        Task { @MainActor in
+                            pastedLink = first
+                            fetchPastedLink()
+                        }
+                    }
+                    .labelStyle(.iconOnly)
+                    Button("Fetch", action: fetchPastedLink)
+                        .disabled(pastedLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || linkStatus == .fetching)
+                }
+            }
+
+            switch linkStatus {
+            case .idle:
+                EmptyView()
+            case .fetching:
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Fetching server settings…")
+                        .foregroundStyle(.secondary)
+                }
+            case .failed(let message):
+                Text(message)
+                    .foregroundStyle(.red)
+            case .filled(let host):
+                Label("Filled in from \(host). Check the details, then Save.",
+                      systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Quick Setup")
+        } footer: {
+            Text("Scan the server's QR code or paste its configure link to fill in this form.")
+        }
+    }
+
+    private func fetchPastedLink() {
+        guard let link = ConfigureLink(scanned: pastedLink) else {
+            linkStatus = .failed(ConfigureError.notALink.message)
+            return
+        }
+        fetch(link)
+    }
+
+    /// Fetches the link's settings and fills the form. Nothing is saved.
+    private func fetch(_ link: ConfigureLink) {
+        fetchTask?.cancel()
+        linkStatus = .fetching
+        fetchTask = Task {
+            let outcome: Result<ConfigurePayload, ConfigureError>
+            do {
+                outcome = .success(try await ConfigureClient().fetch(link))
+            } catch let error as ConfigureError {
+                outcome = .failure(error)
+            } catch {
+                outcome = .failure(.failed(detail: ErrorText.describe(error)))
+            }
+            guard !Task.isCancelled else { return }
+            switch outcome {
+            case .success(let payload):
+                apply(ServerFormValues(payload))
+                linkStatus = .filled(host: link.host)
+                showingPasteField = false
+                pastedLink = ""
+            case .failure(let error):
+                linkStatus = .failed(error.message)
+            }
+        }
+    }
+
+    private func apply(_ values: ServerFormValues) {
+        name = values.name
+        endpoint = values.endpoint
+        bucket = values.bucket
+        region = values.region
+        pathStyle = values.pathStyle
+        accessKey = values.accessKey
+        secretKey = values.secretKey
+        validationError = nil
+        testResult = nil
     }
 
     // MARK: - Actions
